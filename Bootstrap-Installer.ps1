@@ -113,6 +113,17 @@ function Refresh-Status {
     $script:Winget = Resolve-Winget
 }
 
+# A fresh computer has no saved folder. Test-Path -LiteralPath '' raises
+# ParameterArgumentValidationErrorEmptyString before the Browse dialog opens.
+function Test-ExistingDirectory([AllowEmptyString()][string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try {
+        return [bool](Test-Path -LiteralPath $Path -PathType Container -ErrorAction Stop)
+    } catch {
+        return $false
+    }
+}
+
 function Prebuilt-NativeFilesExist {
     return (Test-Path -LiteralPath (Join-Path $script:Root 'dist\windows\PrintExp3DLauncher.exe')) -and
            (Test-Path -LiteralPath (Join-Path $script:Root 'dist\windows\UV3DPage.dll'))
@@ -222,6 +233,7 @@ function Install-Compiler {
 }
 
 if ($CheckOnly) {
+    if (Test-ExistingDirectory '') { throw 'Empty directory path guard failed.' }
     Refresh-Status
     Write-Output "Python=$([bool]$script:Python)"
     Write-Output "Git=$([bool]$script:Git)"
@@ -514,7 +526,8 @@ $script:BrowseButton.Add_Click({
     $picker = New-Object System.Windows.Forms.FolderBrowserDialog
     $picker.Description = 'Select the folder containing PrintExp_X64.exe'
     $picker.ShowNewFolderButton = $false
-    if (Test-Path -LiteralPath $script:FolderInput.Text) { $picker.SelectedPath = $script:FolderInput.Text }
+    $previousSelection = [string]$script:FolderInput.Text
+    if (Test-ExistingDirectory $previousSelection) { $picker.SelectedPath = $previousSelection }
     if ($picker.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         $script:FolderInput.Text = $picker.SelectedPath
         Save-Selection $picker.SelectedPath
