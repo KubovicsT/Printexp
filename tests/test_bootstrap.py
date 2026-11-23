@@ -89,6 +89,13 @@ class SingleWindowContractTests(unittest.TestCase):
         self.assertIn("Get-FileHash -LiteralPath $path", ui)
         self.assertIn("verify_installed_files(target, staged, commit, expected_sha, log=log)", core)
 
+    def test_repair_launcher_uses_fresh_download_not_installed_manager(self):
+        repair = (ROOT / "Start-Installer-Repair.vbs").read_text(encoding="utf-8")
+        self.assertIn("Bootstrap-Installer.ps1", repair)
+        self.assertIn("shell.CurrentDirectory = parent", repair)
+        self.assertNotIn("selected-install.txt", repair)
+        self.assertNotIn("UV3DAddOn", repair)
+
     def test_update_worker_detached_from_addon_folder_to_avoid_winerror32(self):
         ui = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
         vbs = (ROOT / "Start-Installer.vbs").read_text(encoding="utf-8")

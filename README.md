@@ -359,3 +359,20 @@ the latest ZIP and run its `Bootstrap-Installer.ps1` from outside
 The older `Start-Installer.vbs` redirects to its installed copy and can
 therefore reintroduce this lock during the first repair. Close File Explorer
 windows or terminals currently inside `UV3DAddOn` before retrying.
+
+### One-time repair for an older installed manager
+
+1. Download a fresh ZIP of the latest `main` branch and extract it **outside**
+   `UV3DAddOn` (for example `X:\UV3D\PrintExp-Installer-Repair`).
+2. Close PrintExp, the old add-on manager, any command prompts or Explorer
+   windows currently inside `UV3DAddOn`.
+3. Double-click **`Start-Installer-Repair.vbs` in the extracted ZIP**.
+   It bypasses the older manager and opens the regular single-window manager.
+4. Choose the existing PrintExp folder and press **Update from main**.
+   The updater should now rename its managed folder without WinError 32.
+5. On subsequent launches, use the ordinary `Start-Installer.vbs`.
+
+The repair launcher is only an alternate entrypoint to the same manager; it
+does not create a second interface or bypass UAC. It never uninstalls the
+previous version or overwrites any vendor original outside the normal verified
+update transaction.
