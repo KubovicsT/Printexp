@@ -126,3 +126,19 @@ downloads optional machine-wide dependencies, and saves the path in
 `%LOCALAPPDATA%`. It therefore does NOT yet satisfy a literal
 "zero writes outside the selected folder" requirement. A fully portable,
 in-folder bootstrap will be necessary before claiming that.**
+
+## Native-page investigation log
+
+Stage 1 now records **read-only UI structure** at several points after PrintExp
+launch and whenever 3D is selected. The log includes Windows control classes,
+top-navigation control IDs, positions, visibility, and page navigation events.
+These observations will be used to identify how PrintExp switches its built-in
+pages. **No original vendor file is patched during this diagnostic stage.**
+
+The diagnostic is stored exclusively in the selected PrintExp directory:
+
+`<selected PrintExp folder>/UV3DAddOn/diagnostics/stage1.log`
+
+After launching the experimental 3D page, click **Vision**, **Print**, and
+**3D**, close PrintExp, and share that log. Do not connect printer hardware
+while running these UI experiments.

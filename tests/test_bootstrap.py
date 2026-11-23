@@ -98,6 +98,14 @@ class SingleWindowContractTests(unittest.TestCase):
             self.assertIn(name, page)
         self.assertIn("tab_x=-1", cfg)
 
+    def test_readonly_native_navigation_probe(self):
+        source = (ROOT / "src" / "native" / "Stage1Page.cpp").read_text(encoding="utf-8")
+        for marker in ("DumpNativeUi", "EnumChildWindows(g_host, NativeUiElement",
+                       "native-nav event: WM_COMMAND", "WM_NOTIFY",
+                       "Native PrintExp UI inspection"):
+            self.assertIn(marker, source)
+        self.assertNotIn("WriteProcessMemory", source)
+
     def test_native_build_can_find_compiler(self):
         text = (ROOT / "Build-Native.cmd").read_text()
         self.assertIn("vswhere.exe", text)

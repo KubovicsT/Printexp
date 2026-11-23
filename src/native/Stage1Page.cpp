@@ -32,6 +32,7 @@ static POINT g_dragStart = {};
 static int g_dragStartLeft = 0;
 static int g_dragStartTop = 0;
 static constexpr UINT_PTR kRepositionTimer = 0x3D21;
+static unsigned g_probeTicks = 0;
 static constexpr UINT_PTR kSubclassId = 0x3D2026;
 static const wchar_t* kTabClass = L"UV3D_PrintExp_Tab_Stage1";
 static const wchar_t* kPageClass = L"UV3D_PrintExp_Page_Stage1";
@@ -93,6 +94,7 @@ static void RectPaint(HDC dc, RECT r, COLORREF fill) {
 }
 
 static void Position();
+static void DumpNativeUi(const wchar_t* reason);
 
 static void SaveTabLocation() {
     const std::wstring root = AddonRoot();
@@ -184,6 +186,7 @@ static LRESULT CALLBACK TabProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 g_active = !g_active;
                 StageLog(g_active ? L"3D tab clicked: showing page" :
                                     L"3D tab clicked: hiding page");
+                DumpNativeUi(g_active ? L"3D selected" : L"3D deselected");
                 ShowWindow(g_page, g_active ? SW_SHOWNOACTIVATE : SW_HIDE);
                 Position();
                 InvalidateRect(hwnd, nullptr, TRUE);
@@ -246,6 +249,51 @@ static LRESULT CALLBACK PageProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd,msg,wp,lp);
 }
 
+
+struct NativeUiProbe {
+    HWND mainFrame;
+    unsigned entries;
+};
+static BOOL CALLBACK NativeUiElement(HWND control, LPARAM arg) {
+    auto* probe = reinterpret_cast<NativeUiProbe*>(arg);
+    if (probe->entries >= 180) return FALSE;
+    RECT rect = {};
+    if (!GetWindowRect(control, &rect)) return TRUE;
+    POINT origin = {rect.left, rect.top};
+    if (!ScreenToClient(probe->mainFrame, &origin)) return TRUE;
+    const int width = rect.right - rect.left;
+    const int height = rect.bottom - rect.top;
+    // Collect the top navigation and large page-container windows.
+    if (!((origin.y >= -20 && origin.y < 180 &&
+           width > 12 && height > 10) ||
+          (width > 450 && height > 250 && origin.y < 300))) return TRUE;
+    wchar_t cls[96] = {};
+    wchar_t label[120] = {};
+    GetClassNameW(control, cls, 96);
+    GetWindowTextW(control, label, 120);
+    HWND parent = GetParent(control);
+    wchar_t parentClass[96] = {};
+    if (parent) GetClassNameW(parent, parentClass, 96);
+    StageLog(L"native-ui: class=" + std::wstring(cls) +
+             L" caption=" + label +
+             L" id=" + std::to_wstring(GetDlgCtrlID(control)) +
+             L" parentClass=" + parentClass +
+             L" x=" + std::to_wstring(origin.x) +
+             L" y=" + std::to_wstring(origin.y) +
+             L" w=" + std::to_wstring(width) +
+             L" h=" + std::to_wstring(height) +
+             L" visible=" + std::to_wstring(IsWindowVisible(control) ? 1 : 0));
+    ++probe->entries;
+    return TRUE;
+}
+static void DumpNativeUi(const wchar_t* reason) {
+    if (!g_host || !IsWindow(g_host)) return;
+    StageLog(L"---- Native PrintExp UI inspection: " + std::wstring(reason) + L" ----");
+    NativeUiProbe probe = {g_host, 0};
+    EnumChildWindows(g_host, NativeUiElement, reinterpret_cast<LPARAM>(&probe));
+    StageLog(L"---- Native UI elements logged: " + std::to_wstring(probe.entries) + L" ----");
+}
+
 static void Position() {
     if (!g_host || !IsWindow(g_host)) return;
     if (!g_tab || !IsWindow(g_tab) || !g_page || !IsWindow(g_page)) return;
@@ -302,7 +350,19 @@ static LRESULT CALLBACK HostSubclass(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     }
     if (message == WM_TIMER && wp == kRepositionTimer) {
         Position(); // Vision can appear after PrintExp startup.
+        ++g_probeTicks;
+        if (g_probeTicks == 3) DumpNativeUi(L"1.8 seconds after registration");
+        if (g_probeTicks == 15) DumpNativeUi(L"9 seconds after registration");
+        if (g_probeTicks == 40) DumpNativeUi(L"24 seconds after registration");
         return 0;
+    }
+    if (message == WM_COMMAND) {
+        StageLog(L"native-nav event: WM_COMMAND id=" +
+            std::to_wstring(LOWORD(wp)) + L" code=" +
+            std::to_wstring(HIWORD(wp)));
+    }
+    if (message == WM_NOTIFY) {
+        StageLog(L"native-nav event: WM_NOTIFY id=" + std::to_wstring(wp));
     }
     LRESULT value = DefSubclassProc(hwnd, message, wp, lp);
     if (message == WM_SIZE || message == WM_MOVE ||
