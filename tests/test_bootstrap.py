@@ -76,6 +76,18 @@ class SingleWindowContractTests(unittest.TestCase):
             self.assertIn(required, launcher)
         self.assertIn("if (!alreadyTriedElevation &&", launcher)
 
+    def test_stage1_targets_exact_message_window_and_owned_overlay(self):
+        page = (ROOT / "src" / "native" / "Stage1Page.cpp").read_text(encoding="utf-8")
+        launcher = (ROOT / "src" / "native" / "Stage1Launcher.cpp").read_text(encoding="utf-8")
+        self.assertIn("Create3DPage(msg->hwnd)", page)
+        self.assertIn("msg->message == WM_NULL", page)
+        self.assertIn("WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE", page)
+        self.assertIn("WS_POPUP | WS_VISIBLE", page)
+        self.assertIn("ClientToScreen(g_host, &origin)", page)
+        self.assertIn("stableSince", launcher)
+        self.assertIn("diagnostics", page)
+        self.assertIn("diagnostics", launcher)
+
     def test_native_build_can_find_compiler(self):
         text = (ROOT / "Build-Native.cmd").read_text()
         self.assertIn("vswhere.exe", text)

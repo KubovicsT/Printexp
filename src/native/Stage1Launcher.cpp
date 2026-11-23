@@ -42,6 +42,39 @@ static std::wstring Folder(const std::wstring& path) {
     return slash==std::wstring::npos ? L"." : path.substr(0,slash);
 }
 
+static void StageLog(const std::wstring& message) {
+    wchar_t module[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, module, MAX_PATH)) return;
+    std::wstring folder = Folder(module);
+    // Launcher lives in UV3DAddOn\\dist\\windows.
+    folder = Folder(Folder(folder));
+    if (folder.empty()) return;
+    const std::wstring logFolder = folder + L"\\diagnostics";
+    CreateDirectoryW(logFolder.c_str(), nullptr);
+    const std::wstring logFile = logFolder + L"\\stage1.log";
+    HANDLE handle = CreateFileW(logFile.c_str(), FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return;
+    SYSTEMTIME now = {};
+    GetLocalTime(&now);
+    wchar_t stamp[80] = {};
+    swprintf_s(stamp, L"[%04u-%02u-%02u %02u:%02u:%02u] PID=%lu ",
+        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute,
+        now.wSecond, GetCurrentProcessId());
+    std::wstring line = std::wstring(stamp) + message + L"\r\n";
+    int count = WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1,
+        nullptr, 0, nullptr, nullptr);
+    if (count > 1) {
+        std::vector<char> bytes(static_cast<size_t>(count));
+        WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1,
+            bytes.data(), count, nullptr, nullptr);
+        DWORD written = 0;
+        WriteFile(handle, bytes.data(), static_cast<DWORD>(count-1), &written, nullptr);
+    }
+    CloseHandle(handle);
+}
+
 static std::wstring Hex(const UCHAR* bytes,size_t count) {
     static const wchar_t* dig=L"0123456789abcdef";
     std::wstring result;
@@ -108,14 +141,36 @@ static bool RelaunchAsAdministrator(const std::wstring& launcherPath,
     return true;
 }
 
-struct FindData { DWORD pid; HWND hwnd; DWORD tid; };
-static BOOL CALLBACK FindPrintExp(HWND w,LPARAM lp) {
-    FindData* f=reinterpret_cast<FindData*>(lp);
-    DWORD p=0;DWORD t=GetWindowThreadProcessId(w,&p);
-    if(p!=f->pid || GetWindow(w,GW_OWNER) || !IsWindowVisible(w)) return TRUE;
-    RECT r={};GetWindowRect(w,&r);
-    if(r.right-r.left<500 || r.bottom-r.top<360) return TRUE;
-    f->hwnd=w;f->tid=t;return FALSE;
+struct FindData { DWORD pid; HWND hwnd; DWORD tid; long long score; };
+static BOOL CALLBACK CountChildWindows(HWND, LPARAM data) {
+    ++(*reinterpret_cast<int*>(data));
+    return TRUE;
+}
+static BOOL CALLBACK FindPrintExp(HWND w, LPARAM lp) {
+    FindData* f = reinterpret_cast<FindData*>(lp);
+    DWORD p = 0;
+    DWORD thread = GetWindowThreadProcessId(w, &p);
+    if (p != f->pid || GetWindow(w, GW_OWNER) || !IsWindowVisible(w)) return TRUE;
+    RECT rect = {};
+    GetWindowRect(w, &rect);
+    const int width = rect.right - rect.left;
+    const int height = rect.bottom - rect.top;
+    if (width < 640 || height < 420) return TRUE;
+    int children = 0;
+    EnumChildWindows(w, CountChildWindows, reinterpret_cast<LPARAM>(&children));
+    // PrintExp's real MFC frame has substantial child UI. Splash windows usually
+    // have fewer widgets and lack the resizable frame style.
+    const LONG_PTR style = GetWindowLongPtrW(w, GWL_STYLE);
+    const long long score = static_cast<long long>(children) * 10000000 +
+        (style & WS_THICKFRAME ? 30000000 : 0) +
+        (style & WS_MAXIMIZEBOX ? 10000000 : 0) +
+        static_cast<long long>(width) * height;
+    if (score > f->score) {
+        f->hwnd = w;
+        f->tid = thread;
+        f->score = score;
+    }
+    return TRUE;
 }
 
 int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
@@ -129,6 +184,7 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
     }
     const bool alreadyTriedElevation = (argc==3);
     std::wstring executable=args[1];LocalFree(args);
+    StageLog(L"Launcher started; target=" + executable);
     if(FileSha256(executable)!=kSupportedSha) {
         Error(L"This PrintExp_X64.exe does not match the exact inspected build.\n"
               L"The 3D page was not loaded. Original PrintExp was not modified.");
@@ -163,21 +219,44 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
         return 7;
     }
     WaitForInputIdle(pi.hProcess,15000);
-    FindData f={pi.dwProcessId,nullptr,0};
-    for(int i=0;i<160 && !f.hwnd;i++) {
-        EnumWindows(FindPrintExp,reinterpret_cast<LPARAM>(&f));
-        if(!f.hwnd) Sleep(125);
+    // Don't attach to PrintExp's splash/startup window. Require a stable window
+    // candidate for 2.5 seconds, and continue monitoring for a richer MFC frame.
+    FindData f = {pi.dwProcessId, nullptr, 0, -1};
+    HWND candidate = nullptr;
+    DWORD stableSince = GetTickCount();
+    for (int i=0; i<160; ++i) {
+        FindData scan = {pi.dwProcessId, nullptr, 0, -1};
+        EnumWindows(FindPrintExp, reinterpret_cast<LPARAM>(&scan));
+        if (scan.hwnd != candidate) {
+            candidate = scan.hwnd;
+            stableSince = GetTickCount();
+        }
+        if (candidate && GetTickCount() - stableSince >= 2500) {
+            f = scan;
+            break;
+        }
+        if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0) break;
+        Sleep(125);
     }
     if(!f.hwnd) {
         Error(L"PrintExp launched, but its main window was not detected.\n"
               L"PrintExp is still running normally without the 3D page.");
         CloseHandle(pi.hThread);CloseHandle(pi.hProcess);FreeLibrary(localDll);return 8;
     }
+    wchar_t targetTitle[256] = {};
+    wchar_t targetClass[256] = {};
+    GetWindowTextW(f.hwnd, targetTitle, 256);
+    GetClassNameW(f.hwnd, targetClass, 256);
+    StageLog(L"Attaching to HWND=" + std::to_wstring(reinterpret_cast<UINT_PTR>(f.hwnd)) +
+        L" title=" + targetTitle + L" class=" + targetClass +
+        L" thread=" + std::to_wstring(f.tid) +
+        L" score=" + std::to_wstring(f.score));
     std::wstring eventName=L"Local\\UV3D_PageReady_"+std::to_wstring(pi.dwProcessId);
     HANDLE ready=CreateEventW(nullptr,TRUE,FALSE,eventName.c_str());
     HHOOK hook=SetWindowsHookExW(WH_GETMESSAGE,hookproc,localDll,f.tid);
     if(!hook) {
         const DWORD code = GetLastError();
+        StageLog(L"FAILED: SetWindowsHookEx error=" + std::to_wstring(code));
         ErrorWin32(L"Windows blocked the experimental 3D module hook.\n"
                      L"PrintExp is running unchanged.", code);
         if(ready)CloseHandle(ready);
@@ -194,9 +273,11 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
     CloseHandle(pi.hThread);CloseHandle(pi.hProcess);
     FreeLibrary(localDll);
     if(!success) {
+        StageLog(L"FAILED: UI did not signal readiness (window may be splash, hook did not execute, or UI creation failed)");
         Error(L"3D tab did not initialize. PrintExp is still running normally.\n"
               L"No printer commands were issued, and no PrintExp files were changed.");
         return 10;
     }
+    StageLog(L"SUCCESS: injected UI reported readiness");
     return 0;
 }

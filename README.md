@@ -61,3 +61,23 @@ python -m unittest discover -s tests -v
 ```
 
 These tests do not reproduce the actual Windows UAC flow or prove that the native tab will appear. Confirm behavior on the target Windows PC before proceeding to printer-control integration.
+
+
+## Stage 1 visibility diagnostics
+
+The experimental 3D control now uses a small **owned popup overlay** (inside the
+PrintExp process, attached to its main window), rather than an MFC child control
+that can be hidden beneath proprietary toolbar panes. It still does not register
+a genuine native PrintExp page and is strictly a UI feasibility experiment.
+
+The launcher waits for a stable main-frame candidate instead of immediately
+choosing the first splash window, and the hook uses the **exact** HWND to which
+the launcher posted its test message.
+
+If PrintExp opens but the 3D tab remains invisible, close it and inspect:
+
+`<PrintExp installation>/UV3DAddOn/diagnostics/stage1.log`
+
+The log identifies the chosen host window, attempted UI construction, and
+whether the tab was created and marked visible. It contains no printer commands.
+This is a read-only UI test; do not run it during active printing.

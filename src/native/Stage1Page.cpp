@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <string>
+#include <vector>
 
 #pragma comment(lib, "User32.lib")
 #pragma comment(lib, "Gdi32.lib")
@@ -23,18 +24,54 @@ static constexpr UINT_PTR kSubclassId = 0x3D2026;
 static const wchar_t* kTabClass = L"UV3D_PrintExp_Tab_Stage1";
 static const wchar_t* kPageClass = L"UV3D_PrintExp_Page_Stage1";
 
-static std::wstring ConfigFile() {
+// Log to the installed add-on (not to the user profile of the elevated account).
+static std::wstring AddonRoot() {
     wchar_t name[MAX_PATH] = {};
     if (!GetModuleFileNameW(g_module, name, MAX_PATH)) return L"";
     std::wstring dir(name);
-    for (int i=0; i<3; ++i) { // DLL filename + 'windows' + 'dist'
-        size_t idx = dir.find_last_of(L"\\/");
-        if (idx == std::wstring::npos) return L"";
-        dir.erase(idx);
+    for (int i = 0; i < 3; ++i) { // module filename, windows, dist
+        size_t slash = dir.find_last_of(L"\\/");
+        if (slash == std::wstring::npos) return L"";
+        dir.erase(slash);
     }
-    const std::wstring local = dir + L"\\config\\local-stage1.ini";
+    return dir;
+}
+
+static void StageLog(const std::wstring& message) {
+    std::wstring root = AddonRoot();
+    if (root.empty()) return;
+    std::wstring folder = root + L"\\diagnostics";
+    CreateDirectoryW(folder.c_str(), nullptr);
+    const std::wstring file = folder + L"\\stage1.log";
+    HANDLE handle = CreateFileW(file.c_str(), FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return;
+    SYSTEMTIME now = {};
+    GetLocalTime(&now);
+    wchar_t stamp[80] = {};
+    swprintf_s(stamp, L"[%04u-%02u-%02u %02u:%02u:%02u] PID=%lu ",
+        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute,
+        now.wSecond, GetCurrentProcessId());
+    std::wstring line = std::wstring(stamp) + message + L"\r\n";
+    const int count = WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1,
+        nullptr, 0, nullptr, nullptr);
+    if (count > 1) {
+        std::vector<char> encoded(static_cast<size_t>(count));
+        WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1,
+            encoded.data(), count, nullptr, nullptr);
+        DWORD written = 0;
+        WriteFile(handle, encoded.data(), static_cast<DWORD>(count - 1), &written, nullptr);
+    }
+    CloseHandle(handle);
+}
+
+static std::wstring ConfigFile() {
+    const std::wstring root = AddonRoot();
+    if (root.empty()) return L"";
+    const std::wstring local = root + L"\\config\\local-stage1.ini";
     if (GetFileAttributesW(local.c_str()) != INVALID_FILE_ATTRIBUTES) return local;
-    return dir + L"\\config\\stage1.ini";
+    return root + L"\\config\\stage1.ini";
 }
 
 static void RectPaint(HDC dc, RECT r, COLORREF fill) {
@@ -43,17 +80,17 @@ static void RectPaint(HDC dc, RECT r, COLORREF fill) {
     DeleteObject(b);
 }
 
+static void Position();
+
 static LRESULT CALLBACK TabProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch(msg) {
         case WM_SETCURSOR: SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE;
         case WM_LBUTTONUP:
             if (g_page) {
                 g_active = !g_active;
-                ShowWindow(g_page, g_active ? SW_SHOW : SW_HIDE);
-                if (g_active) SetWindowPos(g_page, HWND_TOP, 0,0,0,0,
-                                             SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
-                SetWindowPos(g_tab, HWND_TOP,0,0,0,0,
-                             SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+                StageLog(g_active ? L"3D tab clicked: showing page" : L"3D tab clicked: hiding page");
+                ShowWindow(g_page, g_active ? SW_SHOWNOACTIVATE : SW_HIDE);
+                Position();
                 InvalidateRect(hwnd, nullptr, TRUE);
             }
             return 0;
@@ -116,80 +153,122 @@ static LRESULT CALLBACK PageProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 static void Position() {
     if (!g_host || !IsWindow(g_host)) return;
-    RECT r={}; GetClientRect(g_host,&r);
-    int width = r.right-r.left;
-    int height = r.bottom-r.top;
-    if (g_tab) SetWindowPos(g_tab,HWND_TOP, width-108,g_tabTop,86,38,
-                             SWP_NOACTIVATE|SWP_NOOWNERZORDER);
-    if (g_page) SetWindowPos(g_page,HWND_TOP,0,g_contentTop,width,
-                              height>g_contentTop ? height-g_contentTop : 1,
-                              SWP_NOACTIVATE|SWP_NOOWNERZORDER);
-    if (g_tab) SetWindowPos(g_tab,HWND_TOP,0,0,0,0,
-                             SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+    if (!g_tab || !IsWindow(g_tab) || !g_page || !IsWindow(g_page)) return;
+    // Owned popup windows are in the SAME PrintExp process, remain attached
+    // to its main window and cannot be clipped/covered by its MFC child panes.
+    // This is a Stage 1 UI feasibility overlay, not native MFC page registration.
+    if (IsIconic(g_host) || !IsWindowVisible(g_host)) {
+        ShowWindow(g_page, SW_HIDE);
+        ShowWindow(g_tab, SW_HIDE);
+        return;
+    }
+    RECT rect = {};
+    GetClientRect(g_host, &rect);
+    POINT origin = {0, 0};
+    ClientToScreen(g_host, &origin);
+    const int width = rect.right - rect.left;
+    const int height = rect.bottom - rect.top;
+    if (!IsWindowVisible(g_tab)) ShowWindow(g_tab, SW_SHOWNOACTIVATE);
+    SetWindowPos(g_page, HWND_TOP, origin.x, origin.y + g_contentTop,
+        width > 0 ? width : 1,
+        height > g_contentTop ? height - g_contentTop : 1,
+        SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    if (g_active) ShowWindow(g_page, SW_SHOWNOACTIVATE);
+    SetWindowPos(g_tab, HWND_TOP, origin.x + (width > 126 ? width-126 : 0),
+        origin.y + g_tabTop, 108, 38, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 }
 
-static LRESULT CALLBACK HostSubclass(HWND hwnd,UINT message,WPARAM wp,LPARAM lp,
-                                     UINT_PTR id,DWORD_PTR ref) {
+static LRESULT CALLBACK HostSubclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
+                                     UINT_PTR id, DWORD_PTR ref) {
     if (message == WM_NCDESTROY) {
-        RemoveWindowSubclass(hwnd,HostSubclass,id);
-        g_host = nullptr;g_tab = nullptr;g_page = nullptr;
-        return DefSubclassProc(hwnd,message,wp,lp);
+        StageLog(L"Host main window closed; removing UI overlay");
+        if (g_page && IsWindow(g_page)) DestroyWindow(g_page);
+        if (g_tab && IsWindow(g_tab)) DestroyWindow(g_tab);
+        RemoveWindowSubclass(hwnd, HostSubclass, id);
+        g_host = nullptr; g_tab = nullptr; g_page = nullptr; g_active = false;
+        return DefSubclassProc(hwnd, message, wp, lp);
     }
-    LRESULT value = DefSubclassProc(hwnd,message,wp,lp);
-    if (message == WM_SIZE) Position();
+    LRESULT value = DefSubclassProc(hwnd, message, wp, lp);
+    if (message == WM_SIZE || message == WM_MOVE ||
+        message == WM_WINDOWPOSCHANGED || message == WM_SHOWWINDOW) {
+        Position();
+    }
     return value;
 }
 
-struct FindData { DWORD pid; HWND found; };
-static BOOL CALLBACK FindWindowForPid(HWND hwnd,LPARAM p) {
-    FindData* data = reinterpret_cast<FindData*>(p);
-    DWORD pid=0;GetWindowThreadProcessId(hwnd,&pid);
-    if (pid != data->pid || GetWindow(hwnd,GW_OWNER) || !IsWindowVisible(hwnd)) return TRUE;
-    RECT r={};GetWindowRect(hwnd,&r);
-    if (r.right-r.left<500 || r.bottom-r.top<360) return TRUE;
-    data->found=hwnd;return FALSE;
-}
-
-static bool Create3DPage() {
-    FindData f={GetCurrentProcessId(),nullptr};
-    EnumWindows(FindWindowForPid,reinterpret_cast<LPARAM>(&f));
-    if (!f.found) return false;
-    // Pin only inside the matching PrintExp process. The DLL lives until PrintExp exits.
-    HMODULE pin=nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,
-                            reinterpret_cast<LPCWSTR>(&Create3DPage),&pin)) return false;
+static bool Create3DPage(HWND host) {
+    if (!IsWindow(host) || GetAncestor(host, GA_ROOT) != host) return false;
+    DWORD pid = 0;
+    DWORD thread = GetWindowThreadProcessId(host, &pid);
+    if (pid != GetCurrentProcessId() || thread != GetCurrentThreadId()) return false;
+    // No search for the first visible window! The launcher posts WM_NULL to
+    // the chosen main window, and the hook receives that EXACT HWND.
+    HMODULE pin = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                            reinterpret_cast<LPCWSTR>(&Create3DPage), &pin)) {
+        StageLog(L"FAILED: GetModuleHandleEx PIN");
+        return false;
+    }
     const std::wstring ini = ConfigFile();
     if (!ini.empty()) {
-        g_tabTop = GetPrivateProfileIntW(L"Stage1",L"tab_y",54,ini.c_str());
-        g_contentTop = GetPrivateProfileIntW(L"Stage1",L"page_y",111,ini.c_str());
+        g_tabTop = GetPrivateProfileIntW(L"Stage1", L"tab_y", 54, ini.c_str());
+        g_contentTop = GetPrivateProfileIntW(L"Stage1", L"page_y", 111, ini.c_str());
     }
-    WNDCLASSW cls={}; cls.hInstance=g_module;cls.hCursor=LoadCursorW(nullptr,IDC_ARROW);
-    cls.lpfnWndProc=TabProc;cls.lpszClassName=kTabClass;
-    RegisterClassW(&cls);
-    cls.lpfnWndProc=PageProc;cls.lpszClassName=kPageClass;
-    RegisterClassW(&cls);
-    g_host=f.found;
-    if (!SetWindowSubclass(g_host,HostSubclass,kSubclassId,0)) {g_host=nullptr;return false;}
-    g_page=CreateWindowExW(0,kPageClass,L"UV3D Stage 1",WS_CHILD|WS_CLIPSIBLINGS|WS_CLIPCHILDREN,
-                           0,111,600,400,g_host,nullptr,g_module,nullptr);
-    g_tab=CreateWindowExW(0,kTabClass,L"3D",WS_CHILD|WS_VISIBLE|WS_CLIPSIBLINGS,
-                          300,54,86,38,g_host,nullptr,g_module,nullptr);
+    WNDCLASSW cls = {};
+    cls.hInstance = g_module;
+    cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    cls.lpfnWndProc = TabProc;
+    cls.lpszClassName = kTabClass;
+    if (!RegisterClassW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        StageLog(L"FAILED: RegisterClass tab Windows error " + std::to_wstring(GetLastError()));
+        return false;
+    }
+    cls.lpfnWndProc = PageProc;
+    cls.lpszClassName = kPageClass;
+    if (!RegisterClassW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        StageLog(L"FAILED: RegisterClass page Windows error " + std::to_wstring(GetLastError()));
+        return false;
+    }
+    if (!SetWindowSubclass(host, HostSubclass, kSubclassId, 0)) {
+        StageLog(L"FAILED: SetWindowSubclass");
+        return false;
+    }
+    g_host = host;
+    // WS_POPUP with an owner (the PrintExp main frame) stays visually above
+    // its child widgets without creating a second user-facing application.
+    g_page = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        kPageClass, L"UV3D Stage 1", WS_POPUP,
+        0, 0, 600, 400, g_host, nullptr, g_module, nullptr);
+    g_tab = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        kTabClass, L"3D", WS_POPUP | WS_VISIBLE,
+        0, 0, 108, 38, g_host, nullptr, g_module, nullptr);
     if (!g_page || !g_tab) {
-        if(g_tab)DestroyWindow(g_tab);
-        if(g_page)DestroyWindow(g_page);
-        RemoveWindowSubclass(g_host,HostSubclass,kSubclassId);
-        g_host=nullptr;g_tab=nullptr;g_page=nullptr;return false;
+        StageLog(L"FAILED: CreateWindowEx Windows error " + std::to_wstring(GetLastError()));
+        if (g_tab) DestroyWindow(g_tab);
+        if (g_page) DestroyWindow(g_page);
+        RemoveWindowSubclass(g_host, HostSubclass, kSubclassId);
+        g_host = nullptr; g_tab = nullptr; g_page = nullptr;
+        return false;
     }
     Position();
-    std::wstring signal=L"Local\\UV3D_PageReady_"+std::to_wstring(GetCurrentProcessId());
-    HANDLE event=OpenEventW(EVENT_MODIFY_STATE,FALSE,signal.c_str());
-    if(event){SetEvent(event);CloseHandle(event);}
+    StageLog(L"SUCCESS: UI overlay created on host HWND=" +
+        std::to_wstring(reinterpret_cast<UINT_PTR>(host)) +
+        L"; screen tab visible=" + std::to_wstring(IsWindowVisible(g_tab)));
+    std::wstring signal = L"Local\\UV3D_PageReady_" + std::to_wstring(GetCurrentProcessId());
+    HANDLE event = OpenEventW(EVENT_MODIFY_STATE, FALSE, signal.c_str());
+    if (event) { SetEvent(event); CloseHandle(event); }
+    else StageLog(L"FAILED: OpenEvent page-ready; error=" + std::to_wstring(GetLastError()));
     return true;
 }
 
 extern "C" __declspec(dllexport) LRESULT CALLBACK UV3D_GetMessageHook(int code,WPARAM wp,LPARAM lp) {
     // This callback is intentionally limited to UI setup; no machine command path exists.
-    if (code>=0 && !g_host) Create3DPage();
+    if (code == HC_ACTION && lp && !g_host) {
+        const MSG* msg = reinterpret_cast<const MSG*>(lp);
+        if (msg->message == WM_NULL && msg->hwnd) {
+            Create3DPage(msg->hwnd);
+        }
+    }
     return CallNextHookEx(nullptr,code,wp,lp);
 }
 
