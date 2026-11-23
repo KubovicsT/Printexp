@@ -629,7 +629,7 @@ function Read-ProjectMode([string]$InstallFolder) {
     return [int]$mode.Groups[1].Value
 }
 
-function Start-NativePrintExp([string]$InstallFolder) {
+function Start-NativePrintExp([string]$InstallFolder, [switch]$NoAddon) {
     if (-not (Test-VC2010X64Runtime $InstallFolder)) {
         $decision = [System.Windows.Forms.MessageBox]::Show(
             "PrintExp_X64.exe requires Microsoft Visual C++ 2010 SP1 x64 (mfc100u.dll), which is missing." +
@@ -648,6 +648,14 @@ function Start-NativePrintExp([string]$InstallFolder) {
     }
     $native = Join-Path $InstallFolder 'UV3DAddOn\dist\windows\PrintExp3DLauncher.exe'
     $hostExe = Join-Path $InstallFolder 'PrintExp_X64.exe'
+    if ($NoAddon) {
+        # Baseline check: the original vendor program without DLL injection.
+        # Hold Shift while clicking Launch PrintExp + 3D. This isolates
+        # missing dependencies / printer startup from our experimental hook.
+        Start-Process -FilePath $hostExe -WorkingDirectory $InstallFolder -ErrorAction Stop
+        $script:StatusLabel.Text = 'Launching original PrintExp without 3D (Shift+Launch baseline test).'
+        return
+    }
     if (-not (Test-Path -LiteralPath $native -PathType Leaf)) {
         throw 'The 3D launcher is missing; run Install Add-on or Update from main first.'
     }
@@ -690,7 +698,9 @@ $script:LaunchButton.Add_Click({
                 return
             }
         }
-        Start-NativePrintExp $folder
+        $baseline = (([System.Windows.Forms.Control]::ModifierKeys -band
+                      [System.Windows.Forms.Keys]::Shift) -ne 0)
+        Start-NativePrintExp $folder -NoAddon:$baseline
     } catch {
         $details = $_.Exception.Message
         if ($_.Exception -is [System.ComponentModel.Win32Exception] -and $_.Exception.NativeErrorCode -eq 5) {

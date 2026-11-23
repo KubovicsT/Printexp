@@ -229,3 +229,39 @@ For a printer-connected copy, choose **No** and keep online mode. The
 offline mode remains active for the selected test installation until you
 restore its original configuration through **Uninstall Add-on**. A printer
 must remain disconnected during experimental native-page development.
+
+
+## Fresh Windows PC: required Microsoft 2010 x64 MFC runtime
+
+`PrintExp_X64.exe` is built against `mfc100u.dll` (the Unicode Microsoft
+Foundation Class library of Visual C++ 2010). The uploaded vendor directory
+has `mfc100.dll`, but NOT `mfc100u.dll`. Windows must supply the x64
+runtime before the program can even start. Having newer C++ Build Tools
+does not install this legacy dependency.
+
+The single-window installer detects it. When absent, **Launch PrintExp + 3D**
+offers to download and install the Microsoft Visual C++ 2010 SP1 x64
+Redistributable. The download is performed from WinGet's official Microsoft
+package manifest when available, falling back to Microsoft's own
+`download.microsoft.com` installer, with Authenticode validation.
+Windows requests UAC before installing this **system-wide prerequisite**
+(outside the selected PrintExp directory, unlike the add-on itself).
+
+The installer verifies the presence of `mfc100u.dll` before launching
+PrintExp. If the runtime is installed but the program still closes,
+**hold Shift while clicking Launch PrintExp + 3D** to launch the original
+PrintExp executable without any 3D DLL injection. This isolates native
+PrintExp startup problems from experimental page-registration crashes.
+
+For a fuller baseline diagnosis, run the built-in script (no printer required):
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "UV3DAddOn\tools\Diagnose-PrintExpOffline.ps1" -PrintExpFolder "C:\Path\To\PrintExp" -LaunchBaseline
+```
+
+It writes `UV3DAddOn/diagnostics/offline-startup-report.txt` under the
+selected installation. If original PrintExp remains running it leaves it
+alone; if it exits, the script records the exit code and related Windows
+Application Error events. It does not modify the original EXE, issue
+printer commands or simulate a connected controller. Only start with
+`-LaunchBaseline` when PrintExp is not already running.

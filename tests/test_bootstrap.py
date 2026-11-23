@@ -77,6 +77,17 @@ class SingleWindowContractTests(unittest.TestCase):
         self.assertIn("Get-FileHash -LiteralPath $path", ui)
         self.assertIn("verify_installed_files(target, staged, commit, expected_sha, log=log)", core)
 
+    def test_legacy_visual_cpp_2010_mfc_runtime_bootstrap(self):
+        bootstrap = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
+        for required in ("mfc100u.dll", "Microsoft.VCRedist.2010.x64",
+                         "Test-VC2010X64Runtime", "Ensure-VC2010X64Runtime",
+                         "vc2010-install", "Confirm-Authenticode $download 'Microsoft Corporation'",
+                         "Begin-Modification 'vc2010-install'"):
+            self.assertIn(required, bootstrap)
+        self.assertIn("Start-NativePrintExp $folder -NoAddon:$baseline", bootstrap)
+        self.assertIn("ModifierKeys", bootstrap)
+        self.assertIn("VC2010_x64=",bootstrap)
+
     def test_offline_mode_is_reversible_and_does_not_depend_on_vision(self):
         script = (ROOT / "offline_profile.py").read_text(encoding="utf-8")
         ui = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
