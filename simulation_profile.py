@@ -25,12 +25,12 @@ def _change_ini(data: bytes, changes: dict[tuple[bytes, bytes], bytes]) -> bytes
     found = set()
     result = []
     for line in data.splitlines(keepends=True):
-        ending = b"\\r\\n" if line.endswith(b"\\r\\n") else (b"\\n" if line.endswith(b"\\n") else b"")
+        ending = b"\r\n" if line.endswith(b"\r\n") else (b"\n" if line.endswith(b"\n") else b"")
         body = line[:-len(ending)] if ending else line
-        header = re.match(rb"^[ \\t]*\\[([A-Z0-9_]+)\\]", body, re.I)
+        header = re.match(rb"^[ \t]*\[([A-Z0-9_]+)\]", body, re.I)
         if header:
             current = header.group(1).upper()
-        match = re.match(rb"^([ \\t]*)([A-Za-z0-9_]+)([ \\t]*=[ \\t]*)([^;\\r\\n]*)(.*)$", body)
+        match = re.match(rb"^([ \t]*)([A-Za-z0-9_]+)([ \t]*=[ \t]*)([^;\r\n]*)(.*)$", body)
         if match and not body.lstrip().startswith((b";", b"#", b"//")):
             key = (current, match.group(2).upper())
             if key in changes:

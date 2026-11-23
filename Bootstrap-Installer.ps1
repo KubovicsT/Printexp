@@ -644,9 +644,9 @@ function Test-SimulationProfile([string]$InstallFolder) {
     if (-not (Test-Path -LiteralPath $config -PathType Leaf)) { return $false }
     try {
         $data = [IO.File]::ReadAllText($config, [Text.Encoding]::Default)
-        $mode = [regex]::IsMatch($data, '(?im)^[ \t]*PROJECT_MODE[ \t]*=[ \t]*1[ \t]*$')
+        $mode = [regex]::IsMatch($data, '(?im)^[ \t]*PROJECT_MODE[ \t]*=[ \t]*1[ \t\r]*$')
         $ipCount = [regex]::Matches($data,
-            '(?im)^[ \t]*ServerIP[ \t]*=[ \t]*127\.0\.0\.1[ \t]*$').Count
+            '(?im)^[ \t]*ServerIP[ \t]*=[ \t]*127\.0\.0\.1[ \t\r]*$').Count
         return ($mode -and $ipCount -ge 2)
     } catch { return $false }
 }

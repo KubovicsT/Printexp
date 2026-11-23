@@ -120,7 +120,12 @@ class VirtualController:
                 self.threads.append(thread)
             self.logger.put("server", "listening_loopback_only_on_127.0.0.1_5001")
         except Exception:
-            self.stop()
+            # If binding UDP fails, TCP's serve_forever may not have started
+            # yet. Calling shutdown() on an unstarted server deadlocks.
+            for server in (self.tcp, self.udp):
+                if server is not None:
+                    server.server_close()
+            self.tcp = self.udp = None
             raise
 
     def stop(self) -> None:
