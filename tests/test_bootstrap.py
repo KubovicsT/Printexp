@@ -81,9 +81,10 @@ class SingleWindowContractTests(unittest.TestCase):
         launcher = (ROOT / "src" / "native" / "Stage1Launcher.cpp").read_text(encoding="utf-8")
         self.assertIn("Create3DPage(msg->hwnd)", page)
         self.assertIn("msg->message == WM_NULL", page)
-        self.assertIn("WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE", page)
-        self.assertIn("WS_POPUP | WS_VISIBLE", page)
-        self.assertIn("ClientToScreen(g_host, &origin)", page)
+        self.assertIn("WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN", page)
+        self.assertIn("WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS", page)
+        self.assertIn("NativeNavHook", page)
+        self.assertNotIn("WS_POPUP | WS_VISIBLE", page)
         self.assertIn("stableSince", launcher)
         self.assertIn("diagnostics", page)
         self.assertIn("diagnostics", launcher)
@@ -105,6 +106,12 @@ class SingleWindowContractTests(unittest.TestCase):
                        "Native PrintExp UI inspection"):
             self.assertIn(marker, source)
         self.assertNotIn("WriteProcessMemory", source)
+
+    def test_embedded_native_3d_workspace_switches_on_original_nav_clicks(self):
+        page = (ROOT / "src" / "native" / "Stage1Page.cpp").read_text(encoding="utf-8")
+        for key in ("Deactivate3D", "NativeNavHook", "WH_GETMESSAGE", "WM_LBUTTONDOWN",
+                    "UnhookWindowsHookEx", "g_bottomReserve", "SetWindowPos(g_page"):
+            self.assertIn(key, page)
 
     def test_native_build_can_find_compiler(self):
         text = (ROOT / "Build-Native.cmd").read_text()

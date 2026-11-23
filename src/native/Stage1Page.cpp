@@ -19,11 +19,15 @@ static HINSTANCE g_module = nullptr;
 static HWND g_host = nullptr;
 static HWND g_tab = nullptr;
 static HWND g_page = nullptr;
+static HHOOK g_navHook = nullptr;
 static bool g_active = false;
-static int g_tabTop = 54;
+static int g_tabTop = 7;
 static int g_tabLeft = -1;
-static int g_fallbackTabX = 470;
-static int g_contentTop = 111;
+static int g_fallbackTabX = 1348;
+static int g_contentTop = 76;
+static int g_bottomReserve = 46;
+static constexpr int kTabWidth = 144;
+static constexpr int kTabHeight = 62;
 static bool g_dragging = false;
 static bool g_dragged = false;
 static bool g_positionCustomized = false;
@@ -82,7 +86,7 @@ static void StageLog(const std::wstring& message) {
 static std::wstring ConfigFile() {
     const std::wstring root = AddonRoot();
     if (root.empty()) return L"";
-    const std::wstring local = root + L"\\config\\local-stage1.ini";
+    const std::wstring local = root + L"\\config\\native-page.ini";
     if (GetFileAttributesW(local.c_str()) != INVALID_FILE_ATTRIBUTES) return local;
     return root + L"\\config\\stage1.ini";
 }
@@ -138,56 +142,45 @@ static BOOL CALLBACK FindVisionControl(HWND child, LPARAM param) {
     return TRUE;
 }
 
+static void Deactivate3D(const wchar_t* reason) {
+    if (!g_active) return;
+    g_active = false;
+    if (g_page && IsWindow(g_page)) ShowWindow(g_page, SW_HIDE);
+    if (g_tab && IsWindow(g_tab)) InvalidateRect(g_tab, nullptr, TRUE);
+    StageLog(std::wstring(L"3D child page closed: ") + reason);
+}
+
+static LRESULT CALLBACK NativeNavHook(int code, WPARAM wp, LPARAM lp) {
+    // The vendor receives every original navigation click unchanged.
+    if (code == HC_ACTION && lp && g_active && g_host && IsWindow(g_host)) {
+        const MSG* msg = reinterpret_cast<const MSG*>(lp);
+        if (msg->message == WM_LBUTTONDOWN) {
+            POINT screenPoint = msg->pt;
+            RECT ownTab = {};
+            if (g_tab && IsWindow(g_tab)) GetWindowRect(g_tab, &ownTab);
+            if (!PtInRect(&ownTab, screenPoint)) {
+                POINT pt = screenPoint;
+                ScreenToClient(g_host, &pt);
+                RECT client = {};
+                GetClientRect(g_host, &client);
+                if (pt.x >= 0 && pt.x < client.right &&
+                    pt.y >= 0 && pt.y <= g_contentTop) {
+                    Deactivate3D(L"original top navigation clicked");
+                }
+            }
+        }
+    }
+    return CallNextHookEx(g_navHook, code, wp, lp);
+}
+
 static LRESULT CALLBACK TabProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch(msg) {
         case WM_SETCURSOR: SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE;
-        case WM_LBUTTONDOWN:
-            g_dragging = true;
-            g_dragged = false;
-            GetCursorPos(&g_dragStart);
-            g_dragStartLeft = g_tabLeft >= 0 ? g_tabLeft : g_fallbackTabX;
-            g_dragStartTop = g_tabTop;
-            SetCapture(hwnd);
-            return 0;
-        case WM_MOUSEMOVE:
-            if (g_dragging && GetCapture() == hwnd) {
-                POINT current = {};
-                GetCursorPos(&current);
-                const int dx = current.x - g_dragStart.x;
-                const int dy = current.y - g_dragStart.y;
-                if (std::abs(dx) >= 5 || std::abs(dy) >= 5) g_dragged = true;
-                if (g_dragged) {
-                    RECT hostRect = {};
-                    GetClientRect(g_host, &hostRect);
-                    const int maxX = hostRect.right > 108 ? hostRect.right - 108 : 0;
-                    g_tabLeft = g_dragStartLeft + dx;
-                    if (g_tabLeft < 0) g_tabLeft = 0;
-                    if (g_tabLeft > maxX) g_tabLeft = maxX;
-                    g_tabTop = g_dragStartTop + dy;
-                    if (g_tabTop < 0) g_tabTop = 0;
-                    if (g_tabTop > 160) g_tabTop = 160;
-                    g_positionCustomized = true;
-                    Position();
-                }
-            }
-            return 0;
         case WM_LBUTTONUP:
-            if (g_dragging) {
-                const bool wasDragged = g_dragged;
-                g_dragging = false;
-                g_dragged = false;
-                if (GetCapture() == hwnd) ReleaseCapture();
-                if (wasDragged) {
-                    SaveTabLocation();
-                    return 0;
-                }
-            }
             if (g_page) {
                 g_active = !g_active;
-                StageLog(g_active ? L"3D tab clicked: showing page" :
-                                    L"3D tab clicked: hiding page");
-                DumpNativeUi(g_active ? L"3D selected" : L"3D deselected");
-                ShowWindow(g_page, g_active ? SW_SHOWNOACTIVATE : SW_HIDE);
+                StageLog(g_active ? L"3D child page selected" : L"3D child page deselected");
+                ShowWindow(g_page, g_active ? SW_SHOW : SW_HIDE);
                 Position();
                 InvalidateRect(hwnd, nullptr, TRUE);
             }
@@ -297,18 +290,8 @@ static void DumpNativeUi(const wchar_t* reason) {
 static void Position() {
     if (!g_host || !IsWindow(g_host)) return;
     if (!g_tab || !IsWindow(g_tab) || !g_page || !IsWindow(g_page)) return;
-    // Owned popup windows are in the SAME PrintExp process, remain attached
-    // to its main window and cannot be clipped/covered by its MFC child panes.
-    // This is a Stage 1 UI feasibility overlay, not native MFC page registration.
-    if (IsIconic(g_host) || !IsWindowVisible(g_host)) {
-        ShowWindow(g_page, SW_HIDE);
-        ShowWindow(g_tab, SW_HIDE);
-        return;
-    }
     RECT rect = {};
     GetClientRect(g_host, &rect);
-    POINT origin = {0, 0};
-    ClientToScreen(g_host, &origin);
     const int width = rect.right - rect.left;
     const int height = rect.bottom - rect.top;
     if (!g_positionCustomized && !g_dragging) {
@@ -316,25 +299,29 @@ static void Position() {
         EnumChildWindows(g_host, FindVisionControl,
                          reinterpret_cast<LPARAM>(&vision));
         if (vision.found) {
-            g_tabLeft = vision.right + 9;
+            g_tabLeft = vision.right + 7;
             g_tabTop = vision.top;
             if (!g_visionAnchorReported) {
-                StageLog(L"Found Vision control; anchored 3D next to it at x=" +
-                    std::to_wstring(g_tabLeft) + L", y=" + std::to_wstring(g_tabTop));
+                StageLog(L"3D child tab positioned after Vision");
                 g_visionAnchorReported = true;
             }
         }
     }
-    if (!IsWindowVisible(g_tab)) ShowWindow(g_tab, SW_SHOWNOACTIVATE);
-    SetWindowPos(g_page, HWND_TOP, origin.x, origin.y + g_contentTop,
-        width > 0 ? width : 1,
-        height > g_contentTop ? height - g_contentTop : 1,
-        SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-    if (g_active) ShowWindow(g_page, SW_SHOWNOACTIVATE);
-    const int desiredX = g_tabLeft >= 0 ? g_tabLeft : g_fallbackTabX;
-    const int x = desiredX > width - 108 ? (width > 108 ? width - 108 : 0) : desiredX;
-    SetWindowPos(g_tab, HWND_TOP, origin.x + (x > 0 ? x : 0),
-        origin.y + g_tabTop, 108, 38, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    const int preferredX = g_tabLeft >= 0 ? g_tabLeft : g_fallbackTabX;
+    const int x = preferredX > width - kTabWidth ?
+          (width > kTabWidth ? width - kTabWidth : 0) :
+          (preferredX > 0 ? preferredX : 0);
+    const int contentHeight = height - g_contentTop - g_bottomReserve;
+    // Child page follows the PrintExp main frame. It cannot float above
+    // unrelated applications and moves/minimizes with the host.
+    SetWindowPos(g_page, HWND_TOP, 0, g_contentTop,
+                 width > 0 ? width : 1,
+                 contentHeight > 0 ? contentHeight : 1,
+                 SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    if (!g_active) ShowWindow(g_page, SW_HIDE);
+    SetWindowPos(g_tab, HWND_TOP, x, g_tabTop, kTabWidth, kTabHeight,
+                 SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    ShowWindow(g_tab, SW_SHOW);
 }
 
 static LRESULT CALLBACK HostSubclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
@@ -342,6 +329,7 @@ static LRESULT CALLBACK HostSubclass(HWND hwnd, UINT message, WPARAM wp, LPARAM 
     if (message == WM_NCDESTROY) {
         StageLog(L"Host main window closed; removing UI overlay");
         KillTimer(hwnd, kRepositionTimer);
+        if (g_navHook) { UnhookWindowsHookEx(g_navHook); g_navHook = nullptr; }
         if (g_page && IsWindow(g_page)) DestroyWindow(g_page);
         if (g_tab && IsWindow(g_tab)) DestroyWindow(g_tab);
         RemoveWindowSubclass(hwnd, HostSubclass, id);
@@ -387,11 +375,12 @@ static bool Create3DPage(HWND host) {
     }
     const std::wstring ini = ConfigFile();
     if (!ini.empty()) {
-        g_tabTop = GetPrivateProfileIntW(L"Stage1", L"tab_y", 54, ini.c_str());
+        g_tabTop = GetPrivateProfileIntW(L"Stage1", L"tab_y", 7, ini.c_str());
         g_tabLeft = GetPrivateProfileIntW(L"Stage1", L"tab_x", -1, ini.c_str());
         g_positionCustomized = g_tabLeft >= 0;
-        g_fallbackTabX = GetPrivateProfileIntW(L"Stage1", L"fallback_tab_x", 470, ini.c_str());
-        g_contentTop = GetPrivateProfileIntW(L"Stage1", L"page_y", 111, ini.c_str());
+        g_fallbackTabX = GetPrivateProfileIntW(L"Stage1", L"fallback_tab_x", 1348, ini.c_str());
+        g_contentTop = GetPrivateProfileIntW(L"Stage1", L"page_y", 76, ini.c_str());
+        g_bottomReserve = GetPrivateProfileIntW(L"Stage1", L"bottom_bar_height", 46, ini.c_str());
     }
     WNDCLASSW cls = {};
     cls.hInstance = g_module;
@@ -413,14 +402,15 @@ static bool Create3DPage(HWND host) {
         return false;
     }
     g_host = host;
-    // WS_POPUP with an owner (the PrintExp main frame) stays visually above
-    // its child widgets without creating a second user-facing application.
-    g_page = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-        kPageClass, L"UV3D Stage 1", WS_POPUP,
-        0, 0, 600, 400, g_host, nullptr, g_module, nullptr);
-    g_tab = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-        kTabClass, L"3D", WS_POPUP | WS_VISIBLE,
-        0, 0, 108, 38, g_host, nullptr, g_module, nullptr);
+    // Both are child controls in the native PrintExp main frame.
+    g_page = CreateWindowExW(0, kPageClass, L"UV3D Stage 1",
+                            WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+                            0, g_contentTop, 600, 400,
+                            g_host, nullptr, g_module, nullptr);
+    g_tab = CreateWindowExW(0, kTabClass, L"3D",
+                           WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+                           g_fallbackTabX, g_tabTop, kTabWidth, kTabHeight,
+                           g_host, nullptr, g_module, nullptr);
     if (!g_page || !g_tab) {
         StageLog(L"FAILED: CreateWindowEx Windows error " + std::to_wstring(GetLastError()));
         if (g_tab) DestroyWindow(g_tab);
@@ -429,9 +419,12 @@ static bool Create3DPage(HWND host) {
         g_host = nullptr; g_tab = nullptr; g_page = nullptr;
         return false;
     }
+    g_navHook = SetWindowsHookExW(WH_GETMESSAGE, NativeNavHook, g_module, GetCurrentThreadId());
+    if (!g_navHook) StageLog(L"WARNING: navigation watcher unavailable, Win32=" +
+                                    std::to_wstring(GetLastError()));
     SetTimer(g_host, kRepositionTimer, 600, nullptr);
     Position();
-    StageLog(L"SUCCESS: UI overlay created on host HWND=" +
+    StageLog(L"SUCCESS: embedded 3D child page created on host HWND=" +
         std::to_wstring(reinterpret_cast<UINT_PTR>(host)) +
         L"; screen tab visible=" + std::to_wstring(IsWindowVisible(g_tab)));
     std::wstring signal = L"Local\\UV3D_PageReady_" + std::to_wstring(GetCurrentProcessId());

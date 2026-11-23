@@ -142,3 +142,20 @@ The diagnostic is stored exclusively in the selected PrintExp directory:
 After launching the experimental 3D page, click **Vision**, **Print**, and
 **3D**, close PrintExp, and share that log. Do not connect printer hardware
 while running these UI experiments.
+
+
+## Embedded native-window Stage 1
+
+The previous owned WS_POPUP overlays are now replaced with two WS_CHILD
+windows parented directly to the PrintExp main frame. The 3D tab occupies
+the same first-row navigation area as Vision. Selecting 3D displays its
+embedded page below the original top navigation while preserving the
+existing device/status bar. Selecting Print, Settings, Adjust, Vision or
+another native navigation button hides the 3D child page and lets PrintExp
+switch normally.
+
+This is a **native Windows child-page extension**, but not yet an entry in
+the vendor's proprietary MFC page-factory registration table. Its next step
+is native navigation factory integration after the diagnostic control IDs
+are verified. No printer/motion/UV controls are used by this Stage 1 page.
+The old draggable-popup coordinates are ignored by this new native layout.
