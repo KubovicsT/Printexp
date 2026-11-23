@@ -162,13 +162,16 @@ def install_or_update(target: Path, log: Log = print, repo_url: str = REPOSITORY
     if entry.exists():
         raise InstallationError(f"'{LAUNCHER_NAME}' already exists. Refusing to overwrite it.")
     log("Cloning private repository main branch via your installed Git credentials...")
-    # Stage into the chosen drive so no C: drive mirror or moves across volumes.
-    with tempfile.TemporaryDirectory(prefix="uv3d-setup-", dir=target) as tmp:
+    # Clone/build in the user profile rather than the protected PrintExp folder.
+    # Installing into Program Files is handled through a separate UAC prompt.
+    with tempfile.TemporaryDirectory(prefix="uv3d-setup-") as tmp:
         staged = Path(tmp) / "checkout"
         run_git(["clone", "--branch", "main", "--single-branch", repo_url, str(staged)], log=log)
         ensure_binaries(staged, log=log)
         commit = run_git(["-C", str(staged), "rev-parse", "HEAD"], log=lambda msg: None)
-        staged.rename(addon)
+        # shutil.move also supports PrintExp being installed on another drive.
+        # The managed add-on is the only directory written under PrintExp.
+        shutil.move(str(staged), str(addon))
     try:
         entry.write_bytes(launcher_text().encode("utf-8"))
         data = {"format": MARKER_VALUE, "repo": REPOSITORY, "commit": commit,

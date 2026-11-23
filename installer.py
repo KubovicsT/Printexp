@@ -1,31 +1,72 @@
 """Small Windows GUI for the PrintExp native 3D page add-on."""
 from __future__ import annotations
 
+import argparse
+import ctypes
 import os
 import queue
 import subprocess
+import sys
+import tempfile
 import threading
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from addon_manager_core import (ADDON_DIR, LAUNCHER_NAME, InstallationError,
-                                install_or_update, uninstall)
+                                install_or_update, uninstall, validate_target)
+
+
+def target_requires_elevation(folder: Path) -> bool:
+    """Probe write access without changing any vendor files."""
+    destination = Path(folder) / ADDON_DIR
+    probe_dir = destination if destination.is_dir() else Path(folder)
+    try:
+        # The temporary file is removed immediately. Do not trust os.access()
+        # on Windows: UAC-protected directories can report misleading results.
+        with tempfile.TemporaryFile(prefix=".uv3d-write-test-", dir=probe_dir):
+            pass
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        if getattr(exc, "winerror", None) in (5, 1314):
+            return True
+        raise InstallationError(f"Could not check write permissions for {probe_dir}: {exc}") from exc
+
+
+def request_elevated_manager(action: str, folder: str) -> None:
+    """Reopen only the add-on manager with the Windows UAC 'runas' verb."""
+    script = Path(__file__).resolve()
+    args = subprocess.list2cmdline(
+        [str(script), "--target", str(Path(folder).resolve()), "--auto-action", action]
+    )
+    rc = ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", sys.executable, args, str(script.parent), 1
+    )
+    if rc <= 32:
+        raise InstallationError(
+            "Windows administrator permission was not granted. "
+            "No PrintExp files were changed."
+        )
 
 
 class Installer(tk.Tk):
-    def __init__(self) -> None:
+    def __init__(self, initial_target: str = "", auto_action: str | None = None) -> None:
         super().__init__()
         self.title("PrintExp 3D Add-on Manager — Stage 1")
         self.geometry("750x440")
         self.minsize(660, 420)
         self.resizable(True, True)
         self.configure(background="#18212b")
-        self.folder = tk.StringVar(value="")
+        self.folder = tk.StringVar(value=initial_target)
         self.events: queue.Queue[tuple[str, str]] = queue.Queue()
         self.busy = False
         self._build()
         self.after(80, self._drain)
+        if auto_action:
+            # Show the elevated window first, then request the usual confirmation.
+            self.after(250, lambda: self._operate(auto_action))
 
     def _build(self) -> None:
         style = ttk.Style(self)
@@ -81,6 +122,26 @@ class Installer(tk.Tk):
         folder = self.folder.get().strip()
         if not folder:
             messagebox.showerror("Choose PrintExp", "Select the folder containing PrintExp_X64.exe.")
+            return
+        # Validate before requesting elevation. Do not display a UAC prompt for
+        # an incorrect folder or unsupported PrintExp executable.
+        try:
+            if action in ("install", "update"):
+                validate_target(Path(folder))
+            if os.name == "nt" and target_requires_elevation(Path(folder)):
+                if messagebox.askyesno(
+                    "Administrator permission required",
+                    "Windows protects this PrintExp folder. To " + action
+                    + " the add-on, Windows must authorize writing files there.\\n\\n"
+                    "The original PrintExp executable and vendor DLLs will not be modified.\\n\\n"
+                    "Open the add-on manager with administrator permissions?"
+                ):
+                    request_elevated_manager(action, folder)
+                    self.destroy()
+                return
+        except Exception as exc:
+            self._log("ERROR: " + str(exc))
+            messagebox.showerror("Installation location", str(exc))
             return
         if action in ("install", "update") and not messagebox.askyesno(
             "Experimental native page",
@@ -148,4 +209,8 @@ class Installer(tk.Tk):
 
 
 if __name__ == "__main__":
-    Installer().mainloop()
+    parser = argparse.ArgumentParser(description="PrintExp 3D add-on manager")
+    parser.add_argument("--target", default="", help="Selected PrintExp installation folder")
+    parser.add_argument("--auto-action", choices=("install", "update", "uninstall"))
+    args = parser.parse_args()
+    Installer(initial_target=args.target, auto_action=args.auto_action).mainloop()
