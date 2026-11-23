@@ -162,7 +162,45 @@ static void* FindMainFrame(HWND host) {
         if (from) frame = reinterpret_cast<MfcFromHandle>(from)(host);
     }
     if (!frame) {
-        Log(L"Native registration: could not resolve a permanent MFC main-frame object");
+        // VC++ 2010 MFC builds sometimes export only ordinals. Search the
+        // pinned PrintExp executable's own writable static data for a pointer
+        // to its permanent CMainFrame object, then verify the exact HWND.
+        unsigned char* image =
+            reinterpret_cast<unsigned char*>(GetModuleHandleW(nullptr));
+        if (image) {
+            constexpr size_t dataStart=0x28f000;
+            constexpr size_t dataSize=0x59a8; // PE .data VirtualSize
+            for (size_t offset=0;offset+sizeof(void*)<=dataSize;offset+=sizeof(void*)) {
+                void* candidate=nullptr;
+                std::memcpy(&candidate,image+dataStart+offset,sizeof(candidate));
+                if (!candidate || candidate==image) continue;
+                MEMORY_BASIC_INFORMATION region={};
+                if (!VirtualQuery(candidate,&region,sizeof(region)) ||
+                    region.State!=MEM_COMMIT ||
+                    (region.Protect & PAGE_GUARD) ||
+                    (region.Protect & PAGE_NOACCESS)) continue;
+                bool hit=false;
+                __try {
+                    auto* bytes=static_cast<const unsigned char*>(candidate);
+                    for (size_t pos=0;pos<=0x100;pos+=sizeof(void*)) {
+                        HWND candidateHwnd=nullptr;
+                        std::memcpy(&candidateHwnd,bytes+pos,sizeof(candidateHwnd));
+                        if (candidateHwnd==host) {hit=true;break;}
+                    }
+                } __except(EXCEPTION_EXECUTE_HANDLER) {hit=false;}
+                if (hit) {
+                    frame=candidate;
+                    Log(L"Native registration: discovered MFC main frame through "
+                        L"PrintExp static-data pointer RVA=" + std::to_wstring(
+                        dataStart+offset));
+                    break;
+                }
+            }
+        }
+    }
+    if (!frame) {
+        if (GetTickCount()%10000<600) Log(
+            L"Native registration: MFC main-frame object not available yet");
         return nullptr;
     }
     // Check that this is the permanent wrapper for the exact selected HWND.
