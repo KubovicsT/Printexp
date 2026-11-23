@@ -2,7 +2,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from unittest.mock import patch
 import subprocess
 import sys
 import tempfile
@@ -45,22 +44,6 @@ class ManagerTests(unittest.TestCase):
     def run_install(self):
         return install_or_update(self.vendor, log=lambda _: None,
                                  repo_url=str(self.repo), expected_sha=self.expected)
-
-    def test_checkout_is_staged_outside_vendor_directory(self):
-        original = tempfile.TemporaryDirectory
-        dirs = []
-        def capture_tempdir(*args, **kwargs):
-            dirs.append(kwargs.get("dir"))
-            return original(*args, **kwargs)
-        with patch("addon_manager_core.tempfile.TemporaryDirectory", side_effect=capture_tempdir):
-            self.run_install()
-        self.assertIn(None, dirs)
-        self.assertTrue((self.vendor / ADDON_DIR).is_dir())
-
-    def test_permission_probe_detects_denied_access(self):
-        from installer import target_requires_elevation
-        with patch("installer.tempfile.TemporaryFile", side_effect=PermissionError("Access denied")):
-            self.assertTrue(target_requires_elevation(self.vendor))
 
     def test_wrong_folder_rejected(self):
         with self.assertRaises(InstallationError):

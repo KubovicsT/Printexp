@@ -1,47 +1,59 @@
-"""Portable repository checks for the bootstrap entrypoint.
-
-Actual automatic installer execution is a Windows-only end-to-end test.
-"""
+"""Portable static checks; actual Windows UAC/GUI needs an on-machine test."""
 from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class BootstrapContractTests(unittest.TestCase):
-    def test_entrypoint_has_no_python_or_git_prerequisite(self):
-        start = (ROOT / "Start-Installer.cmd").read_text(encoding="utf-8")
-        self.assertIn("Bootstrap-Installer.ps1", start)
-        self.assertIn("powershell.exe", start)
-        self.assertNotIn("where py", start)
-        self.assertNotIn("where git", start)
+class SingleWindowContractTests(unittest.TestCase):
+    def test_starts_one_powershell_window_without_python(self):
+        start = (ROOT / "Start-Installer.cmd").read_text()
+        vbs = (ROOT / "Start-Installer.vbs").read_text()
+        self.assertIn("wscript.exe", start)
+        self.assertIn("Bootstrap-Installer.ps1", vbs)
+        self.assertNotIn("installer.py", vbs)
+        self.assertNotIn("installer.py", start)
 
-    def test_bootstrap_checks_then_downloads_missing_deps(self):
-        text = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
-        for required in ("Resolve-Python", "Resolve-Git", "Resolve-Compiler", "Resolve-Winget",
-                         "Python.Python.3.13", "Git.Git", "Install-PythonFallback",
-                         "Install-GitFallback", "Install-Compiler", "Get-AuthenticodeSignature",
-                         "Get-FileHash", "Install missing tools", "BuildToolsCheckbox",
-                         "CheckOnly", "installer.py"):
-            self.assertIn(required, text)
-        self.assertIn("https://www.python.org/ftp/python/3.13.14/", text)
-        self.assertIn("https://aka.ms/vs/17/release/vs_BuildTools.exe", text)
+    def test_exactly_four_primary_actions_and_no_extra_gui(self):
+        text = (ROOT / "Bootstrap-Installer.ps1").read_text()
+        self.assertIn("Install Add-on", text)
+        self.assertIn("Update from main", text)
+        self.assertIn("Uninstall Add-on", text)
+        self.assertIn("Launch PrintExp + 3D", text)
+        for name in ("InstallButton", "UpdateButton", "UninstallButton", "LaunchButton"):
+            self.assertIn(name, text)
+        self.assertNotIn("Prepare the PrintExp 3D Installer", text)
+        self.assertNotIn("Open Installer", text)
+        self.assertNotIn("Install missing tools and open installer", text)
+        self.assertFalse((ROOT / "installer.py").exists())
+        self.assertEqual(text.count("$form.ShowDialog()"), 1)
 
-    def test_first_window_update_and_remembered_folder(self):
-        bootstrap = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
-        manager = (ROOT / "installer.py").read_text(encoding="utf-8")
-        for text in ("Update from main", "Invoke-UpdateFromMain", "update_addon.py",
-                     "Save-PrintExpSelection", "selected-install.txt",
-                     "Add_Leave", "Add_FormClosing"):
-            self.assertIn(text, bootstrap)
-        self.assertNotIn('text="Update from main"', manager)
-        self.assertIn("remembered_selection()", manager)
-        self.assertIn("WM_DELETE_WINDOW", manager)
+    def test_all_mutations_request_uac_and_worker_checks_admin(self):
+        text = (ROOT / "Bootstrap-Installer.ps1").read_text()
+        self.assertIn("-Verb RunAs", text)
+        self.assertIn("Test-Administrator", text)
+        for action in ("install", "update", "uninstall"):
+            self.assertIn(f"Begin-Modification '{action}'", text)
+        self.assertIn('UAC is requested on EVERY modification', text)
+        self.assertIn("-WindowStyle Hidden", text)
 
-    def test_native_build_can_find_custom_compiler_path(self):
-        script = (ROOT / "Build-Native.cmd").read_text(encoding="utf-8")
-        self.assertIn("vswhere.exe", script)
-        self.assertIn("vcvars64.bat", script)
+    def test_remembers_print_exp_folder(self):
+        text = (ROOT / "Bootstrap-Installer.ps1").read_text()
+        self.assertIn("selected-install.txt", text)
+        self.assertIn("Read-Selection", text)
+        self.assertIn("Save-Selection", text)
+        self.assertIn("Add_FormClosing", text)
+
+    def test_dependencies_still_auto_installed(self):
+        text = (ROOT / "Bootstrap-Installer.ps1").read_text()
+        for key in ("Ensure-Python", "Ensure-Git", "Ensure-CompilerIfNeeded", "Install-PythonFallback",
+                    "Install-GitFallback", "Install-Compiler", "Get-AuthenticodeSignature", "Get-FileHash"):
+            self.assertIn(key, text)
+
+    def test_native_build_can_find_compiler(self):
+        text = (ROOT / "Build-Native.cmd").read_text()
+        self.assertIn("vswhere.exe", text)
+        self.assertIn("vcvars64.bat", text)
 
 
 if __name__ == "__main__":

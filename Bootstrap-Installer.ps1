@@ -6,7 +6,7 @@
   No vendor files are modified here.
 #>
 [CmdletBinding()]
-param([switch]$CheckOnly)
+param([switch]$CheckOnly, [string]$WorkerRequest = "")
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -21,6 +21,7 @@ $script:StatusLabel = $null
 $script:ContinueButton = $null
 $script:BuildToolsCheckbox = $null
 $script:BuildToolsPath = $null
+$script:WorkerLog = $null
 $script:PrintExpPath = $null
 $script:UpdateButton = $null
 $script:SelectionFile = Join-Path $env:LOCALAPPDATA 'PrintExp3DAddOn\selected-install.txt'
@@ -123,6 +124,8 @@ function Log-Message([string]$Message) {
         $script:LogBox.SelectionStart = $script:LogBox.TextLength
         $script:LogBox.ScrollToCaret()
         [System.Windows.Forms.Application]::DoEvents()
+    } elseif ($script:WorkerLog) {
+        [IO.File]::AppendAllText($script:WorkerLog, "$Message`r`n", [Text.Encoding]::UTF8)
     } else { Write-Host $Message }
 }
 
@@ -210,7 +213,7 @@ function Install-Compiler {
     Log-Message 'The Microsoft C++ toolchain is large (potentially several gigabytes).'
     $arguments = @('--quiet','--wait','--norestart','--add',
                    'Microsoft.VisualStudio.Workload.VCTools','--includeRecommended')
-    $location = $script:BuildToolsPath.Text.Trim()
+    $location = if (Test-Path -LiteralPath 'X:\') { 'X:\VisualStudioBuildTools' } else { '' }
     if ($location) {
         # Start-Process joins the argument array; quote paths containing spaces explicitly.
         $arguments += @('--installPath', ('"' + $location + '"'))
@@ -223,307 +226,326 @@ if ($CheckOnly) {
     Write-Output "Python=$([bool]$script:Python)"
     Write-Output "Git=$([bool]$script:Git)"
     Write-Output "MSVC=$([bool]$script:Compiler)"
-    Write-Output "Prebuilt=$([bool](Prebuilt-NativeFilesExist))"
     exit 0
 }
 
-if (-not [Environment]::Is64BitOperatingSystem) {
-    Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.MessageBox]::Show('This add-on requires 64-bit Windows.', 'PrintExp 3D') | Out-Null
-    exit 1
+# This is the only user-facing window. Worker mode is a hidden, elevated process,
+# never a second installer window.
+function Test-Administrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-[System.Windows.Forms.Application]::EnableVisualStyles()
-Refresh-Status
-
-$form = New-Object System.Windows.Forms.Form
-$form.Text = 'PrintExp 3D Add-on - Dependency Setup'
-$form.Size = New-Object System.Drawing.Size(680, 645)
-$form.MinimumSize = New-Object System.Drawing.Size(680, 645)
-$form.StartPosition = 'CenterScreen'
-$form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
-$script:Form = $form
-
-$title = New-Object System.Windows.Forms.Label
-$title.Text = 'Prepare the PrintExp 3D Installer'
-$title.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 16)
-$title.AutoSize = $true
-$title.Location = New-Object System.Drawing.Point(18, 16)
-$form.Controls.Add($title)
-
-$intro = New-Object System.Windows.Forms.Label
-$intro.Text = 'Missing tools are downloaded from official sources. Already installed tools are reused.'
-$intro.Size = New-Object System.Drawing.Size(635, 43)
-$intro.Location = New-Object System.Drawing.Point(20, 55)
-$form.Controls.Add($intro)
-
-$script:StatusLabel = New-Object System.Windows.Forms.Label
-$script:StatusLabel.Location = New-Object System.Drawing.Point(20, 101)
-$script:StatusLabel.Size = New-Object System.Drawing.Size(635, 82)
-$form.Controls.Add($script:StatusLabel)
-
-$script:BuildToolsCheckbox = New-Object System.Windows.Forms.CheckBox
-$script:BuildToolsCheckbox.Location = New-Object System.Drawing.Point(20, 190)
-$script:BuildToolsCheckbox.Size = New-Object System.Drawing.Size(635, 50)
-$script:BuildToolsCheckbox.Text = 'Install Microsoft C++ Build Tools if needed (large download; may require administrator approval)'
-$form.Controls.Add($script:BuildToolsCheckbox)
-
-$pathLabel = New-Object System.Windows.Forms.Label
-$pathLabel.Text = 'Build Tools install location (other tools use their standard paths):'
-$pathLabel.Location = New-Object System.Drawing.Point(20, 238)
-$pathLabel.Size = New-Object System.Drawing.Size(635, 24)
-$form.Controls.Add($pathLabel)
-$script:BuildToolsPath = New-Object System.Windows.Forms.TextBox
-$script:BuildToolsPath.Location = New-Object System.Drawing.Point(20, 263)
-$script:BuildToolsPath.Size = New-Object System.Drawing.Size(620, 25)
-$script:BuildToolsPath.Anchor = 'Top,Left,Right'
-$script:BuildToolsPath.Text = if (Test-Path -LiteralPath 'X:\') { 'X:\VisualStudioBuildTools' } else { '' }
-$form.Controls.Add($script:BuildToolsPath)
-
-$script:LogBox = New-Object System.Windows.Forms.TextBox
-$script:LogBox.Multiline = $true
-$script:LogBox.ReadOnly = $true
-$script:LogBox.ScrollBars = 'Vertical'
-$script:LogBox.Font = New-Object System.Drawing.Font('Consolas', 9)
-$script:LogBox.Location = New-Object System.Drawing.Point(20, 302)
-$script:LogBox.Size = New-Object System.Drawing.Size(620, 151)
-$script:LogBox.Anchor = 'Top,Bottom,Left,Right'
-$form.Controls.Add($script:LogBox)
-
-$folderLabel = New-Object System.Windows.Forms.Label
-$folderLabel.Text = 'PrintExp installation folder (remembered automatically):'
-$folderLabel.Location = New-Object System.Drawing.Point(20, 466)
-$folderLabel.Size = New-Object System.Drawing.Size(635, 24)
-$form.Controls.Add($folderLabel)
-
-$script:PrintExpPath = New-Object System.Windows.Forms.TextBox
-$script:PrintExpPath.Location = New-Object System.Drawing.Point(20, 494)
-$script:PrintExpPath.Size = New-Object System.Drawing.Size(525, 27)
-$script:PrintExpPath.Anchor = 'Bottom,Left,Right'
-$form.Controls.Add($script:PrintExpPath)
-
-$browse = New-Object System.Windows.Forms.Button
-$browse.Text = 'Browse...'
-$browse.Location = New-Object System.Drawing.Point(552, 494)
-$browse.Size = New-Object System.Drawing.Size(88, 30)
-$browse.Anchor = 'Bottom,Right'
-$browse.Add_Click({
-    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dialog.Description = 'Select the folder containing PrintExp_X64.exe'
-    $candidate = $script:PrintExpPath.Text.Trim()
-    if ($candidate -and (Test-Path -LiteralPath $candidate)) { $dialog.SelectedPath = $candidate }
-    if ($dialog.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) {
-        $script:PrintExpPath.Text = $dialog.SelectedPath
-        Save-PrintExpSelection $dialog.SelectedPath
-    }
-    $dialog.Dispose()
-})
-$form.Controls.Add($browse)
-
-$script:PrintExpPath.Add_Leave({
-    $selected = $script:PrintExpPath.Text.Trim()
-    if ($selected -and (Test-Path -LiteralPath (Join-Path $selected 'PrintExp_X64.exe'))) {
-        Save-PrintExpSelection $selected
-    }
-})
-$form.Add_FormClosing({
-    $selected = $script:PrintExpPath.Text.Trim()
-    if ($selected -and (Test-Path -LiteralPath (Join-Path $selected 'PrintExp_X64.exe'))) {
-        Save-PrintExpSelection $selected
-    }
-})
-
-$script:UpdateButton = New-Object System.Windows.Forms.Button
-$script:UpdateButton.Text = 'Update from main'
-$script:UpdateButton.Location = New-Object System.Drawing.Point(136, 551)
-$script:UpdateButton.Size = New-Object System.Drawing.Size(170, 38)
-$script:UpdateButton.Anchor = 'Bottom,Left'
-$form.Controls.Add($script:UpdateButton)
-
-$script:ContinueButton = New-Object System.Windows.Forms.Button
-$script:ContinueButton.Text = 'Install missing dependencies and open installer'
-$script:ContinueButton.Location = New-Object System.Drawing.Point(310, 551)
-$script:ContinueButton.Size = New-Object System.Drawing.Size(330, 38)
-$script:ContinueButton.Anchor = 'Bottom,Right'
-$form.Controls.Add($script:ContinueButton)
-
-$cancel = New-Object System.Windows.Forms.Button
-$cancel.Text = 'Cancel'
-$cancel.Location = New-Object System.Drawing.Point(20, 551)
-$cancel.Size = New-Object System.Drawing.Size(105, 37)
-$cancel.Anchor = 'Bottom,Left'
-$cancel.Add_Click({ $form.Close() })
-$form.Controls.Add($cancel)
-
-function Ensure-PythonAndGit {
+function Ensure-Python {
+    Refresh-Status
     if (-not $script:Python) {
+        Log-Message 'Installing missing Python 3...'
         if (Install-UsingWinget 'Python.Python.3.13') { Refresh-Status }
-        if (-not $script:Python) {
-            Log-Message 'Using the official Python.org installer as a fallback.'
-            Install-PythonFallback
-            Refresh-Status
-        }
-        if (-not $script:Python) { throw 'Python was installed but cannot be found with Tkinter. Restart Windows and retry.' }
-        Log-Message "Python ready: $script:Python"
+        if (-not $script:Python) { Install-PythonFallback; Refresh-Status }
     }
+    if (-not $script:Python) { throw 'Python 3 with Tkinter is unavailable after installation. Restart Windows and try again.' }
+}
+
+function Ensure-Git {
+    Refresh-Status
     if (-not $script:Git) {
+        Log-Message 'Installing missing Git for Windows...'
         if (Install-UsingWinget 'Git.Git') { Refresh-Status }
-        if (-not $script:Git) {
-            Log-Message 'Using the official signed Git for Windows installer as a fallback.'
-            Install-GitFallback
-            Refresh-Status
-        }
-        if (-not $script:Git) { throw 'Git was installed but cannot be found. Restart Windows and retry.' }
-        Log-Message "Git ready: $script:Git"
+        if (-not $script:Git) { Install-GitFallback; Refresh-Status }
     }
+    if (-not $script:Git) { throw 'Git for Windows is unavailable after installation. Restart Windows and try again.' }
     $env:Path = "$(Split-Path -Parent $script:Git);$env:Path"
 }
 
-function Save-PrintExpSelection([string]$SelectedFolder) {
-    $parent = Split-Path -Parent $script:SelectionFile
-    if (-not (Test-Path -LiteralPath $parent)) { [void](New-Item -ItemType Directory -Path $parent -Force) }
-    [IO.File]::WriteAllText($script:SelectionFile, $SelectedFolder, [Text.Encoding]::UTF8)
-}
-
-function Test-UpdateNeedsAdmin([string]$InstallFolder) {
-    $managedFolder = Join-Path $InstallFolder 'UV3DAddOn'
-    $probe = Join-Path $managedFolder ('.uv3d-write-probe-' + [Guid]::NewGuid().ToString('N'))
-    $file = $null
-    try {
-        $file = [IO.File]::Open($probe, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-        return $false
-    } catch [System.UnauthorizedAccessException] {
-        return $true
-    } catch [System.IO.IOException] {
-        if ($_.Exception.HResult -eq -2147024891) { return $true }
-        throw
-    } finally {
-        if ($file) { $file.Dispose(); [IO.File]::Delete($probe) }
-    }
-}
-
-function Invoke-UpdateFromMain {
-    $folder = $script:PrintExpPath.Text.Trim()
-    if (-not $folder -or -not (Test-Path -LiteralPath (Join-Path $folder 'PrintExp_X64.exe'))) {
-        throw 'Select the folder containing PrintExp_X64.exe before updating.'
-    }
-    if (-not (Test-Path -LiteralPath (Join-Path $folder 'UV3DAddOn\.uv3d-managed-install.json'))) {
-        throw 'The 3D add-on is not installed yet. Use Open Installer and Install first.'
-    }
-    if ([System.Windows.Forms.MessageBox]::Show(
-        'Update the installed 3D add-on from the latest main branch? Close PrintExp first. Original PrintExp files remain unchanged.',
-        'Update from main', [System.Windows.Forms.MessageBoxButtons]::YesNo,
-        [System.Windows.Forms.MessageBoxIcon]::Question) -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-    Save-PrintExpSelection $folder
-    Ensure-PythonAndGit
-    $scriptPath = Join-Path $script:Root 'update_addon.py'
-    if (-not (Test-Path -LiteralPath $scriptPath)) { throw 'Missing update_addon.py. Download the latest installer.' }
-    $logPath = Join-Path $env:TEMP ('uv3d-update-' + [Guid]::NewGuid().ToString('N') + '.log')
-    $arguments = ('"' + $scriptPath + '" --target "' + $folder + '" --log-file "' + $logPath + '"')
-    $options = @{ FilePath=$script:Python; ArgumentList=$arguments; WorkingDirectory=$script:Root; PassThru=$true }
-    if (Test-UpdateNeedsAdmin $folder) {
-        Log-Message 'Windows administrator permission is needed for the PrintExp folder.'
-        $options['Verb'] = 'RunAs'
-    }
-    Log-Message 'Updating installed add-on from origin/main...'
-    $process = Start-Process @options
-    while (-not $process.HasExited) {
-        [System.Windows.Forms.Application]::DoEvents()
-        Start-Sleep -Milliseconds 300
-        $process.Refresh()
-    }
-    if (Test-Path -LiteralPath $logPath) {
-        foreach ($line in (Get-Content -LiteralPath $logPath -ErrorAction SilentlyContinue)) { Log-Message $line }
-        Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
-    }
-    if ($process.ExitCode -ne 0) { throw "Update failed (code $($process.ExitCode)). See log above." }
-    Log-Message 'Update complete. Original PrintExp files remain unchanged.'
-}
-
-function Update-Display {
-    $prebuilt = Prebuilt-NativeFilesExist
-    $compilerReq = -not $prebuilt
-    $pyText = if ($script:Python) {'Installed'} else {'Missing'}
-    $gitText = if ($script:Git) {'Installed'} else {'Missing'}
-    $compilerText = if ($script:Compiler) {'Installed'} elseif ($prebuilt) {'Not needed (prebuilt x64 files exist)'} else {'Missing'}
-    $script:StatusLabel.Text = "Python 3 + Tkinter: $pyText`r`nGit for Windows: $gitText`r`nMicrosoft C++ Build Tools: $compilerText"
-    $script:BuildToolsCheckbox.Enabled = $compilerReq -and -not $script:Compiler
-    $script:BuildToolsCheckbox.Checked = $script:BuildToolsCheckbox.Enabled
-    $script:BuildToolsPath.Enabled = $script:BuildToolsCheckbox.Enabled
-    if ($script:Python -and $script:Git -and ($script:Compiler -or $prebuilt)) {
-        $script:ContinueButton.Text = 'Open Installer'
-    } else {
-        $script:ContinueButton.Text = 'Install missing tools and open installer'
-    }
-}
-
-
-# Restore the folder last selected in either window.
-if (Test-Path -LiteralPath $script:SelectionFile) {
-    try { $script:PrintExpPath.Text = [IO.File]::ReadAllText($script:SelectionFile, [Text.Encoding]::UTF8).Trim() } catch { }
-}
-Update-Display
-Log-Message 'Update from main is available here. Install/Uninstall are in the next window.'
-
-$script:UpdateButton.Add_Click({
-    $script:UpdateButton.Enabled = $false
-    $script:ContinueButton.Enabled = $false
-    try { Invoke-UpdateFromMain }
-    catch {
-        Log-Message "ERROR: $($_.Exception.Message)"
-        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'PrintExp update',
-            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
-    } finally {
-        $script:UpdateButton.Enabled = $true
-        $script:ContinueButton.Enabled = $true
+function Ensure-CompilerIfNeeded([string]$Action, [string]$InstallFolder) {
+    $installedBinaries = (Test-Path -LiteralPath (Join-Path $InstallFolder 'UV3DAddOn\dist\windows\PrintExp3DLauncher.exe')) -and
+        (Test-Path -LiteralPath (Join-Path $InstallFolder 'UV3DAddOn\dist\windows\UV3DPage.dll'))
+    if ($installedBinaries -or (Prebuilt-NativeFilesExist)) { return }
+    Refresh-Status
+    if (-not $script:Compiler) {
+        Log-Message 'Native binaries are not prebuilt. Installing Microsoft C++ Build Tools (large download)...'
+        Install-Compiler
         Refresh-Status
-        Update-Display
+    }
+    if (-not $script:Compiler) { throw 'Microsoft C++ Build Tools could not be detected after installation. Restart Windows and try again.' }
+}
+
+function Run-ElevatedAction([string]$Action, [string]$InstallFolder) {
+    if (-not (Test-Administrator)) { throw 'Administrator permission is required for Install, Update and Uninstall.' }
+    if ($Action -notin @('install','update','uninstall')) { throw 'Unsupported modification action.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallFolder 'PrintExp_X64.exe'))) {
+        throw 'Select the folder that contains PrintExp_X64.exe.'
+    }
+    if ($Action -eq 'install' -and (Test-Path -LiteralPath (Join-Path $InstallFolder 'UV3DAddOn'))) {
+        throw 'The add-on already exists. Use Update from main instead.'
+    }
+    if ($Action -eq 'update' -and -not (Test-Path -LiteralPath (Join-Path $InstallFolder 'UV3DAddOn\.uv3d-managed-install.json'))) {
+        throw 'No managed add-on is installed. Use Install Add-on first.'
+    }
+    # Uninstall needs only Python and does not install Git or a compiler.
+    Ensure-Python
+    if ($Action -ne 'uninstall') {
+        Ensure-Git
+        Ensure-CompilerIfNeeded $Action $InstallFolder
+    }
+    Log-Message "Running $Action in the selected PrintExp directory..."
+    $actionScript = Join-Path $script:Root 'addon_action.py'
+    & $script:Python $actionScript --action $Action --target $InstallFolder --log-file $script:WorkerLog
+    if ($LASTEXITCODE -ne 0) { throw "Add-on $Action failed (exit $LASTEXITCODE). See the operation log." }
+}
+
+function Invoke-Worker([string]$RequestFile) {
+    $request = Get-Content -LiteralPath $RequestFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    $script:WorkerLog = [string]$request.log
+    $resultPath = [string]$request.result
+    $result = @{ success = $false; message = 'Unknown error' }
+    try {
+        Log-Message "Starting $($request.action)..."
+        Run-ElevatedAction ([string]$request.action) ([string]$request.folder)
+        $result.success = $true
+        $result.message = "$(($request.action).ToUpperInvariant()) completed successfully."
+        Log-Message $result.message
+    } catch {
+        $result.message = $_.Exception.Message
+        Log-Message "ERROR: $($result.message)"
+    } finally {
+        $result | ConvertTo-Json -Compress | Set-Content -LiteralPath $resultPath -Encoding UTF8
+    }
+    if (-not $result.success) { exit 1 }
+    exit 0
+}
+
+if ($WorkerRequest) {
+    Add-Type -AssemblyName System.Windows.Forms
+    Invoke-Worker $WorkerRequest
+}
+
+if (-not [Environment]::Is64BitOperatingSystem) { throw 'PrintExp 3D requires a 64-bit Windows installation.' }
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+$script:PreferenceFolder = Join-Path $env:LOCALAPPDATA 'PrintExp3DAddOn'
+$script:PreferenceFile = Join-Path $script:PreferenceFolder 'selected-install.txt'
+$script:SavedLogFile = Join-Path $script:PreferenceFolder 'last-operation.log'
+$script:WorkerProcess = $null
+$script:RequestDirectory = $null
+$script:CurrentAction = $null
+$script:WorkerStatus = $null
+$script:StatusLabel = $null
+
+function Read-Selection {
+    try {
+        if (Test-Path -LiteralPath $script:PreferenceFile) {
+            return [IO.File]::ReadAllText($script:PreferenceFile, [Text.Encoding]::UTF8).Trim([char]0xFEFF).Trim()
+        }
+    } catch { }
+    return ''
+}
+
+function Save-Selection([string]$Selection) {
+    $selected = $Selection.Trim()
+    if (-not $selected -or -not (Test-Path -LiteralPath (Join-Path $selected 'PrintExp_X64.exe'))) { return }
+    [IO.Directory]::CreateDirectory($script:PreferenceFolder) | Out-Null
+    [IO.File]::WriteAllText($script:PreferenceFile, $selected, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+function Get-SelectedFolder {
+    $selected = $script:FolderInput.Text.Trim()
+    if (-not $selected -or -not (Test-Path -LiteralPath (Join-Path $selected 'PrintExp_X64.exe'))) {
+        throw 'Choose the PrintExp installation folder containing PrintExp_X64.exe.'
+    }
+    Save-Selection $selected
+    return [IO.Path]::GetFullPath($selected)
+}
+
+function Set-Busy([bool]$Busy) {
+    foreach ($button in @($script:InstallButton,$script:UpdateButton,$script:UninstallButton,$script:LaunchButton,$script:BrowseButton)) {
+        $button.Enabled = -not $Busy
+    }
+    $script:FolderInput.ReadOnly = $Busy
+}
+
+function Begin-Modification([string]$Action) {
+    if ($script:WorkerProcess) { return }
+    try {
+        $folder = Get-SelectedFolder
+        if ($Action -eq 'update' -and -not (Test-Path -LiteralPath (Join-Path $folder 'UV3DAddOn\.uv3d-managed-install.json'))) {
+            throw 'The add-on is not installed. Use Install Add-on first.'
+        }
+        if ($Action -eq 'install' -and (Test-Path -LiteralPath (Join-Path $folder 'UV3DAddOn'))) {
+            throw 'The add-on is already installed. Use Update from main.'
+        }
+        # UAC is requested on EVERY modification, not only if a write probe fails.
+        $dir = Join-Path $env:TEMP ('PrintExp3D-'+[guid]::NewGuid().ToString('N'))
+        [IO.Directory]::CreateDirectory($dir) | Out-Null
+        $script:RequestDirectory = $dir
+        $requestFile = Join-Path $dir 'request.json'
+        $resultFile = Join-Path $dir 'result.json'
+        $logFile = Join-Path $dir 'operation.log'
+        @{ action = $Action; folder = $folder; log = $logFile; result = $resultFile } |
+            ConvertTo-Json -Compress | Set-Content -LiteralPath $requestFile -Encoding UTF8
+        $script:WorkerResult = $resultFile
+        $script:WorkerLog = $logFile
+        $script:CurrentAction = $Action
+        $script:WorkerStatus = 'Requesting administrator permission...'
+        $script:StatusLabel.Text = $script:WorkerStatus
+        # ShellExecute 'runas' displays the standard Windows UAC approval dialog.
+        # The worker itself is hidden; the existing manager window stays visible.
+        $arguments = '-NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -WorkerRequest "{1}"' -f $PSCommandPath, $requestFile
+        $script:WorkerProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -Verb RunAs -WindowStyle Hidden -PassThru -ErrorAction Stop
+        Set-Busy $true
+    } catch {
+        $script:StatusLabel.Text = 'Not started: ' + $_.Exception.Message
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'PrintExp 3D', 'OK', 'Error') | Out-Null
+        $script:WorkerProcess = $null
+        if ($script:RequestDirectory) {
+            Remove-Item -LiteralPath $script:RequestDirectory -Recurse -Force -ErrorAction SilentlyContinue
+            $script:RequestDirectory = $null
+        }
+    }
+}
+
+function Finish-Modification {
+    $success = $false
+    $message = 'The elevated worker stopped without returning a result. Check the operation log.'
+    try {
+        if (Test-Path -LiteralPath $script:WorkerResult) {
+            $value = Get-Content -LiteralPath $script:WorkerResult -Raw -Encoding UTF8 | ConvertFrom-Json
+            $success = [bool]$value.success
+            $message = [string]$value.message
+        }
+        if (Test-Path -LiteralPath $script:WorkerLog) {
+            [IO.Directory]::CreateDirectory($script:PreferenceFolder) | Out-Null
+            Copy-Item -LiteralPath $script:WorkerLog -Destination $script:SavedLogFile -Force
+        }
+    } catch { $message = "Unable to read worker result: $($_.Exception.Message)" }
+    Set-Busy $false
+    $script:WorkerProcess = $null
+    $script:StatusLabel.Text = $message
+    if ($script:RequestDirectory) {
+        Remove-Item -LiteralPath $script:RequestDirectory -Recurse -Force -ErrorAction SilentlyContinue
+        $script:RequestDirectory = $null
+    }
+    $icon = if ($success) {'Information'} else {'Error'}
+    [System.Windows.Forms.MessageBox]::Show($message, 'PrintExp 3D', 'OK', $icon) | Out-Null
+}
+
+$form = New-Object System.Windows.Forms.Form
+$form.Text = 'PrintExp 3D Add-on Manager'
+$form.Size = New-Object System.Drawing.Size(760,260)
+$form.MinimumSize = New-Object System.Drawing.Size(760,260)
+$form.MaximumSize = New-Object System.Drawing.Size(1200,350)
+$form.StartPosition = 'CenterScreen'
+$form.Font = New-Object System.Drawing.Font('Segoe UI',10)
+$form.BackColor = [System.Drawing.Color]::FromArgb(24,33,43)
+$form.ForeColor = [System.Drawing.Color]::White
+
+$title = New-Object System.Windows.Forms.Label
+$title.Text = 'PrintExp · 3D Add-on'
+$title.Font = New-Object System.Drawing.Font('Segoe UI Semibold',16)
+$title.AutoSize = $true
+$title.Location = New-Object System.Drawing.Point(20,17)
+$form.Controls.Add($title)
+
+$folderLabel = New-Object System.Windows.Forms.Label
+$folderLabel.Text = 'PrintExp installation folder'
+$folderLabel.Location = New-Object System.Drawing.Point(20,65)
+$folderLabel.AutoSize = $true
+$form.Controls.Add($folderLabel)
+
+$script:FolderInput = New-Object System.Windows.Forms.TextBox
+$script:FolderInput.Text = Read-Selection
+$script:FolderInput.Location = New-Object System.Drawing.Point(20,90)
+$script:FolderInput.Size = New-Object System.Drawing.Size(600,27)
+$script:FolderInput.Anchor = 'Top,Left,Right'
+$form.Controls.Add($script:FolderInput)
+
+$script:BrowseButton = New-Object System.Windows.Forms.Button
+$script:BrowseButton.Text = 'Browse...'
+$script:BrowseButton.Location = New-Object System.Drawing.Point(631,88)
+$script:BrowseButton.Size = New-Object System.Drawing.Size(105,32)
+$script:BrowseButton.Anchor = 'Top,Right'
+$form.Controls.Add($script:BrowseButton)
+$script:BrowseButton.Add_Click({
+    $picker = New-Object System.Windows.Forms.FolderBrowserDialog
+    $picker.Description = 'Select the folder containing PrintExp_X64.exe'
+    $picker.ShowNewFolderButton = $false
+    if (Test-Path -LiteralPath $script:FolderInput.Text) { $picker.SelectedPath = $script:FolderInput.Text }
+    if ($picker.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $script:FolderInput.Text = $picker.SelectedPath
+        Save-Selection $picker.SelectedPath
+    }
+})
+$script:FolderInput.Add_Leave({ Save-Selection $script:FolderInput.Text })
+
+$script:InstallButton = New-Object System.Windows.Forms.Button
+$script:InstallButton.Text = 'Install Add-on'
+$script:InstallButton.Location = New-Object System.Drawing.Point(20,137)
+$script:InstallButton.Size = New-Object System.Drawing.Size(158,39)
+$form.Controls.Add($script:InstallButton)
+$script:InstallButton.Add_Click({ Begin-Modification 'install' })
+
+$script:UpdateButton = New-Object System.Windows.Forms.Button
+$script:UpdateButton.Text = 'Update from main'
+$script:UpdateButton.Location = New-Object System.Drawing.Point(187,137)
+$script:UpdateButton.Size = New-Object System.Drawing.Size(158,39)
+$form.Controls.Add($script:UpdateButton)
+$script:UpdateButton.Add_Click({ Begin-Modification 'update' })
+
+$script:UninstallButton = New-Object System.Windows.Forms.Button
+$script:UninstallButton.Text = 'Uninstall Add-on'
+$script:UninstallButton.Location = New-Object System.Drawing.Point(354,137)
+$script:UninstallButton.Size = New-Object System.Drawing.Size(158,39)
+$form.Controls.Add($script:UninstallButton)
+$script:UninstallButton.Add_Click({ Begin-Modification 'uninstall' })
+
+$script:LaunchButton = New-Object System.Windows.Forms.Button
+$script:LaunchButton.Text = 'Launch PrintExp + 3D'
+$script:LaunchButton.Location = New-Object System.Drawing.Point(521,137)
+$script:LaunchButton.Size = New-Object System.Drawing.Size(215,39)
+$form.Controls.Add($script:LaunchButton)
+$script:LaunchButton.Add_Click({
+    try {
+        if ($script:WorkerProcess) { return }
+        $folder = Get-SelectedFolder
+        $launcher = Join-Path $folder 'Start PrintExp with 3D.cmd'
+        if (-not (Test-Path -LiteralPath $launcher)) { throw 'The 3D add-on is not installed. Click Install Add-on first.' }
+        Start-Process -FilePath $env:ComSpec -ArgumentList ('/d /c "{0}"' -f $launcher) -WorkingDirectory $folder
+        $script:StatusLabel.Text = 'Starting PrintExp with the experimental 3D page...'
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'PrintExp 3D', 'OK', 'Error') | Out-Null
     }
 })
 
-$script:ContinueButton.Add_Click({
-    $script:ContinueButton.Enabled = $false
-    $script:UpdateButton.Enabled = $false
-    $script:BuildToolsCheckbox.Enabled = $false
-    $script:BuildToolsPath.Enabled = $false
+$script:StatusLabel = New-Object System.Windows.Forms.Label
+$script:StatusLabel.Text = 'Ready'
+$script:StatusLabel.Location = New-Object System.Drawing.Point(20,191)
+$script:StatusLabel.Size = New-Object System.Drawing.Size(715,34)
+$script:StatusLabel.Anchor = 'Top,Left,Right'
+$form.Controls.Add($script:StatusLabel)
+
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 400
+$timer.Add_Tick({
+    if (-not $script:WorkerProcess) { return }
+    $script:WorkerProcess.Refresh()
+    if ($script:WorkerProcess.HasExited) { Finish-Modification; return }
     try {
-        Ensure-PythonAndGit
-        if (-not $script:Compiler -and -not (Prebuilt-NativeFilesExist)) {
-            if ($script:BuildToolsCheckbox.Checked) {
-                Install-Compiler
-                Refresh-Status
-                if (-not $script:Compiler) {
-                    throw 'C++ Build Tools installed but compiler not detected. Restart Windows and retry.'
-                }
-                Log-Message 'Microsoft C++ compiler ready.'
-            } else {
-                throw 'Native 3D page binaries are not included. Enable C++ Build Tools or use prebuilt binaries.'
-            }
+        if (Test-Path -LiteralPath $script:WorkerLog) {
+            $last = Get-Content -LiteralPath $script:WorkerLog -Tail 1 -ErrorAction Stop
+            if ($last) { $script:StatusLabel.Text = [string]$last }
         }
-        $selected = $script:PrintExpPath.Text.Trim()
-        if ($selected -and (Test-Path -LiteralPath (Join-Path $selected 'PrintExp_X64.exe'))) {
-            Save-PrintExpSelection $selected
-        }
-        Log-Message 'Dependencies ready. Opening the graphical PrintExp add-on installer...'
-        $form.Hide()
-        if ($selected) {
-            & $script:Python (Join-Path $script:Root 'installer.py') --target $selected
-        } else {
-            & $script:Python (Join-Path $script:Root 'installer.py')
-        }
-        if ($LASTEXITCODE -ne 0) { throw "The installer exited with code $LASTEXITCODE." }
-        $form.Close()
-    } catch {
-        $form.Show()
-        Log-Message "ERROR: $($_.Exception.Message)"
-        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'PrintExp dependency setup',
-            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
-        $script:ContinueButton.Enabled = $true
-        $script:UpdateButton.Enabled = $true
-        Refresh-Status
-        Update-Display
+    } catch { }
+})
+$timer.Start()
+$form.Add_FormClosing({
+    if ($script:WorkerProcess -and -not $script:WorkerProcess.HasExited) {
+        $_.Cancel = $true
+        $script:StatusLabel.Text = 'An installation operation is running. Close the manager once it finishes.'
+        return
     }
+    Save-Selection $script:FolderInput.Text
 })
 [void]$form.ShowDialog()
