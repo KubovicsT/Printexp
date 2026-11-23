@@ -82,6 +82,34 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual([], list(self.vendor.glob(ADDON_DIR + ".backup-*")))
         self.assertEqual([], list(self.vendor.glob(ADDON_DIR + ".staging-*")))
 
+    def test_detached_python_worker_can_replace_installed_addon(self):
+        """Real subprocess runs from outside the folder being renamed."""
+        import shutil
+        self.run_install()
+        original = (self.vendor / ADDON_DIR / ".uv3d-managed-install.json").read_bytes()
+        with tempfile.TemporaryDirectory(prefix="uv3d-detached-worker-test-") as location:
+            stage = Path(location)
+            for filename in ("addon_manager_core.py", "host_backup.py"):
+                shutil.copy2(Path(__file__).resolve().parents[1] / filename,
+                             stage / filename)
+            code = (
+                "from pathlib import Path; "
+                "from addon_manager_core import install_or_update; "
+                "import sys; "
+                "install_or_update(Path(sys.argv[1]), "
+                "repo_url=sys.argv[2], expected_sha=sys.argv[3], log=lambda *_: None)"
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", code,
+                 str(self.vendor), str(self.repo), self.expected],
+                cwd=stage, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + "\\n" + result.stderr)
+        self.assertEqual(original,
+                         (self.vendor / ADDON_DIR / ".uv3d-managed-install.json").read_bytes())
+        self.assertEqual([], list(self.vendor.glob(ADDON_DIR + ".backup-*")))
+        self.assertEqual([], list(self.vendor.glob(ADDON_DIR + ".staging-*")))
+
     def test_update_failure_restores_previous_version(self):
         self.run_install()
         original_launcher = (self.vendor / LAUNCHER_NAME).read_bytes()
