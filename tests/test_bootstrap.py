@@ -88,6 +88,16 @@ class SingleWindowContractTests(unittest.TestCase):
         self.assertIn("diagnostics", page)
         self.assertIn("diagnostics", launcher)
 
+    def test_vision_anchor_and_saved_draggable_position(self):
+        page = (ROOT / "src" / "native" / "Stage1Page.cpp").read_text(encoding="utf-8")
+        cfg = (ROOT / "config" / "stage1.ini").read_text(encoding="utf-8")
+        for name in ("FindVisionControl", "EnumChildWindows",
+                     "SetTimer(g_host", "kRepositionTimer", "WM_MOUSEMOVE",
+                     "SaveTabLocation", "WritePrivateProfileStringW",
+                     "fallback_tab_x"):
+            self.assertIn(name, page)
+        self.assertIn("tab_x=-1", cfg)
+
     def test_native_build_can_find_compiler(self):
         text = (ROOT / "Build-Native.cmd").read_text()
         self.assertIn("vswhere.exe", text)

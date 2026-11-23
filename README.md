@@ -81,3 +81,25 @@ If PrintExp opens but the 3D tab remains invisible, close it and inspect:
 The log identifies the chosen host window, attempted UI construction, and
 whether the tab was created and marked visible. It contains no printer commands.
 This is a read-only UI test; do not run it during active printing.
+
+
+## Vision tab and position calibration
+
+The original PrintExp application already has a built-in page called
+`PageVisionPrint` and the uploaded `Project.ini` enables it with
+`[VISION_PRINT] SUPPORT_VISION_PRINT=1`. Vision sometimes becomes visible
+after startup. This is a compiled feature, not proof of a plugin-registration
+interface.
+
+The experimental 3D tab polls the navigation area after startup. When the
+Vision button exposes a discoverable Windows title, the 3D tab is placed
+immediately **to the right of Vision**. If the vendor uses a custom-drawn
+button, 3D uses the fallback location in `config/stage1.ini`.
+
+To position the tab precisely in the marked slot, **drag the visible 3D
+tab**. The selection is saved to `config/local-stage1.ini` in the managed
+add-on directory and reused on subsequent launches. Delete that local file
+to restore automatic alignment. No original PrintExp configuration is changed.
+
+This remains a Stage 1 owned UI overlay. It has not yet been registered
+as a true native MFC top-level page.
