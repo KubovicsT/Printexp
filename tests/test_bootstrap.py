@@ -50,6 +50,25 @@ class SingleWindowContractTests(unittest.TestCase):
                     "Install-GitFallback", "Install-Compiler", "Get-AuthenticodeSignature", "Get-FileHash"):
             self.assertIn(key, text)
 
+    def test_update_can_repair_old_admin_only_addon_permissions(self):
+        bootstrap = (ROOT / "Bootstrap-Installer.ps1").read_text()
+        core = (ROOT / "addon_manager_core.py").read_text()
+        self.assertNotIn("The add-on is not installed. Use Install Add-on first.", bootstrap)
+        self.assertIn("shutil.copytree(staged, addon)", core)
+        self.assertIn("shutil.copytree(staged, candidate)", core)
+        self.assertNotIn("shutil.move(str(staged), str(addon))", core)
+        self.assertIn("Get-SelectedFolder", bootstrap)
+        self.assertIn("-Verb RunAs", bootstrap)
+        self.assertIn("Start-Process -FilePath $native", bootstrap)
+
+    def test_install_and_update_have_non_elevated_final_file_check(self):
+        ui = (ROOT / "Bootstrap-Installer.ps1").read_text()
+        core = (ROOT / "addon_manager_core.py").read_text()
+        self.assertIn("Test-UserCanReadInstalledFiles", ui)
+        self.assertIn("Post-install verification passed", ui)
+        self.assertIn("Get-FileHash -LiteralPath $path", ui)
+        self.assertIn("verify_installed_files(target, staged, commit, expected_sha, log=log)", core)
+
     def test_native_build_can_find_compiler(self):
         text = (ROOT / "Build-Native.cmd").read_text()
         self.assertIn("vswhere.exe", text)

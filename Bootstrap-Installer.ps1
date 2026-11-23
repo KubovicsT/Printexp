@@ -371,12 +371,12 @@ function Begin-Modification([string]$Action) {
     if ($script:WorkerProcess) { return }
     try {
         $folder = Get-SelectedFolder
-        if ($Action -eq 'update' -and -not (Test-Path -LiteralPath (Join-Path $folder 'UV3DAddOn\.uv3d-managed-install.json'))) {
-            throw 'The add-on is not installed. Use Install Add-on first.'
-        }
-        if ($Action -eq 'install' -and (Test-Path -LiteralPath (Join-Path $folder 'UV3DAddOn'))) {
-            throw 'The add-on is already installed. Use Update from main.'
-        }
+        # Do NOT inspect the old marker as an unelevated user. A previous
+        # installer copied private administrator TEMP permissions into the
+        # add-on folder, so Test-Path can wrongly report the marker missing.
+        # Validation belongs to the elevated worker after UAC approval.
+        # Existing installations and restrictive ACLs are checked by the
+        # elevated worker rather than a low-privilege preflight.
         # UAC is requested on EVERY modification, not only if a write probe fails.
         $dir = Join-Path $env:TEMP ('PrintExp3D-'+[guid]::NewGuid().ToString('N'))
         [IO.Directory]::CreateDirectory($dir) | Out-Null
@@ -389,6 +389,7 @@ function Begin-Modification([string]$Action) {
         $script:WorkerResult = $resultFile
         $script:WorkerLog = $logFile
         $script:CurrentAction = $Action
+        $script:OperationFolder = $folder
         $script:WorkerStatus = 'Requesting administrator permission...'
         $script:StatusLabel.Text = $script:WorkerStatus
         # ShellExecute 'runas' displays the standard Windows UAC approval dialog.
@@ -407,14 +408,55 @@ function Begin-Modification([string]$Action) {
     }
 }
 
+function Test-UserCanReadInstalledFiles([string]$InstallFolder) {
+    # This runs in the ORIGINAL, non-elevated UI account. A successful elevated
+    # installation can still be unusable when files inherit restrictive ACLs.
+    # Confirm that the regular user can read every critical installed component.
+    $required = @(
+        'Start PrintExp with 3D.cmd',
+        'UV3DAddOn\.uv3d-managed-install.json',
+        'UV3DAddOn\dist\windows\PrintExp3DLauncher.exe',
+        'UV3DAddOn\dist\windows\UV3DPage.dll',
+        'UV3DAddOn\addon_manager_core.py',
+        'UV3DAddOn\src\native\Stage1Launcher.cpp',
+        'UV3DAddOn\src\native\Stage1Page.cpp'
+    )
+    foreach ($relative in $required) {
+        $path = Join-Path $InstallFolder $relative
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Post-install check failed: missing or inaccessible $relative"
+        }
+        try {
+            # The checksum operation requires read access and catches ACL issues.
+            # It also confirms the file isn't an empty placeholder.
+            $item = Get-Item -LiteralPath $path -ErrorAction Stop
+            if ($item.Length -eq 0) { throw "Empty file: $relative" }
+            $null = Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop
+        } catch {
+            throw "Post-install check failed: cannot read $relative. $($_.Exception.Message)"
+        }
+    }
+}
+
 function Finish-Modification {
     $success = $false
-    $message = 'The elevated worker stopped without returning a result. Check the operation log.'
+    $message = 'The elevated worker exited without a result. An administrator account may not have access to the request folder, or Windows blocked the process. The original PrintExp files have not been intentionally modified. Check %LOCALAPPDATA%\PrintExp3DAddOn\last-operation.log if available.'
     try {
         if (Test-Path -LiteralPath $script:WorkerResult) {
             $value = Get-Content -LiteralPath $script:WorkerResult -Raw -Encoding UTF8 | ConvertFrom-Json
             $success = [bool]$value.success
             $message = [string]$value.message
+            if ($success -and $script:CurrentAction -in @('install','update')) {
+                # A second check after the elevated worker exits, using the
+                # regular user's permissions. Don't report success prematurely.
+                try {
+                    Test-UserCanReadInstalledFiles $script:OperationFolder
+                    $message += ' Post-install verification passed (files readable by your Windows account).'
+                } catch {
+                    $success = $false
+                    $message = $_.Exception.Message + ' Add-on files were not deleted. Review the operation log.'
+                }
+            }
         }
         if (Test-Path -LiteralPath $script:WorkerLog) {
             [IO.Directory]::CreateDirectory($script:PreferenceFolder) | Out-Null
@@ -512,10 +554,22 @@ $script:LaunchButton.Add_Click({
         $folder = Get-SelectedFolder
         $launcher = Join-Path $folder 'Start PrintExp with 3D.cmd'
         if (-not (Test-Path -LiteralPath $launcher)) { throw 'The 3D add-on is not installed. Click Install Add-on first.' }
-        Start-Process -FilePath $env:ComSpec -ArgumentList ('/d /c "{0}"' -f $launcher) -WorkingDirectory $folder
+        $native = Join-Path $folder 'UV3DAddOn\dist\windows\PrintExp3DLauncher.exe'
+        $hostExe = Join-Path $folder 'PrintExp_X64.exe'
+        if (-not (Test-Path -LiteralPath $native)) {
+            throw 'The native add-on launcher cannot be accessed. An earlier installation may have inherited administrator-only permissions. Click Update from main to repair the add-on.'
+        }
+        # Launch the native file directly to catch Win32 error 5 locally.
+        # The old CMD wrapper only displayed the generic "Access is denied".
+        Start-Process -FilePath $native -ArgumentList ('"{0}"' -f $hostExe) -WorkingDirectory $folder -ErrorAction Stop
         $script:StatusLabel.Text = 'Starting PrintExp with the experimental 3D page...'
     } catch {
-        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'PrintExp 3D', 'OK', 'Error') | Out-Null
+        $details = $_.Exception.Message
+        if ($_.Exception -is [System.ComponentModel.Win32Exception] -and $_.Exception.NativeErrorCode -eq 5) {
+            $details = 'Windows denied access to the add-on executable (error 5). This often means the previous installation retained the administrator temporary folder permissions. Use Update from main to repair the installed files. Original PrintExp files are unchanged.'
+        }
+        $script:StatusLabel.Text = $details
+        [System.Windows.Forms.MessageBox]::Show($details, 'PrintExp 3D', 'OK', 'Error') | Out-Null
     }
 })
 

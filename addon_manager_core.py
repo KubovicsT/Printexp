@@ -8,6 +8,7 @@ import stat
 import shutil
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Callable
 
@@ -113,7 +114,7 @@ def ensure_binaries(checkout: Path, log: Log = print) -> None:
 
 
 def remove_managed_directory(path: Path) -> None:
-    """Remove managed checkout, handling read-only Git objects on Windows."""
+    """Remove a marker-verified checkout, including read-only Git objects on Windows."""
     def retry_readonly(remove_func, entry, failure):
         error = failure[1]
         if not isinstance(error, PermissionError):
@@ -121,6 +122,7 @@ def remove_managed_directory(path: Path) -> None:
         os.chmod(entry, stat.S_IWRITE | stat.S_IREAD)
         remove_func(entry)
     shutil.rmtree(path, onerror=retry_readonly)
+
 
 def source_marker(target: Path) -> Path:
     return target / ADDON_DIR / MARKER_NAME
@@ -140,6 +142,70 @@ def assert_managed(target: Path) -> dict:
     return data
 
 
+def _clone_release(staged: Path, repo_url: str, log: Log) -> str:
+    """Fetch the latest main branch to a user/temp location, never into PrintExp.
+
+    Git may create files with temp-directory ACLs. They must be COPIED (not
+    renamed) into Program Files to inherit the PrintExp directory's ACLs.
+    """
+    log("Downloading latest main branch into a temporary workspace...")
+    run_git(["clone", "--branch", "main", "--single-branch", repo_url, str(staged)], log=log)
+    ensure_binaries(staged, log=log)
+    return run_git(["-C", str(staged), "rev-parse", "HEAD"], log=lambda msg: None)
+
+
+def _verify_package(root: Path, source: Path) -> None:
+    """Check every tracked source file and both runnable binaries after copying.
+
+    This runs against the actual destination, not merely the staged download.
+    Never consider a directory entry alone proof of a complete installation.
+    """
+    tracked = run_git(["-C", str(source), "ls-files"], log=lambda _: None).splitlines()
+    required = set(tracked)
+    required.update(str(Path("dist") / "windows" / binary) for binary in BINARIES)
+    required.add(str(Path(".git") / "HEAD"))
+    for name in sorted(required):
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise InstallationError("Unsafe source path in add-on repository: " + name)
+        original = source / relative
+        installed = root / relative
+        if not original.is_file() or not installed.is_file():
+            raise InstallationError("Post-install verification: missing required file: " + name)
+        try:
+            if original.stat().st_size == 0 or sha256(installed) != sha256(original):
+                raise InstallationError("Post-install verification: corrupted or empty file: " + name)
+        except PermissionError as exc:
+            raise InstallationError("Post-install verification: access denied reading " + name) from exc
+
+
+def verify_installed_files(target: Path, source: Path, commit: str,
+                           expected_sha: str, log: Log = print) -> None:
+    """End-to-end installation check, including launcher, marker and Git HEAD."""
+    target = Path(target)
+    addon = target / ADDON_DIR
+    entry = target / LAUNCHER_NAME
+    log("Post-install verification: checking add-on files, checksums, launcher and version...")
+    _verify_package(addon, source)
+    try:
+        if not entry.is_file():
+            raise InstallationError("Post-install verification: launch script is missing")
+        expected_launcher = hashlib.sha256(launcher_text().encode("utf-8")).hexdigest()
+        if sha256(entry) != expected_launcher:
+            raise InstallationError("Post-install verification: launch script was not installed correctly")
+        marker = assert_managed(target)
+        if (marker.get("commit") != commit or
+                marker.get("host_exe_sha256") != expected_sha or
+                marker.get("launcher_sha256") != expected_launcher):
+            raise InstallationError("Post-install verification: installation marker is missing or inconsistent")
+        installed_head = run_git(["-C", str(addon), "rev-parse", "HEAD"], log=lambda _: None)
+        if installed_head != commit:
+            raise InstallationError("Post-install verification: installed Git revision does not match")
+    except PermissionError as exc:
+        raise InstallationError("Post-install verification: access denied to installed add-on") from exc
+    log("Post-install verification PASSED: all required add-on files are present and match the source.")
+
+
 def install_or_update(target: Path, log: Log = print, repo_url: str = REPOSITORY,
                       expected_sha: str = SUPPORTED_EXE_SHA256) -> str:
     target = Path(target).expanduser().resolve()
@@ -147,51 +213,93 @@ def install_or_update(target: Path, log: Log = print, repo_url: str = REPOSITORY
     ensure_not_running()
     addon = target / ADDON_DIR
     entry = target / LAUNCHER_NAME
-    if addon.exists():
-        assert_managed(target)
+    is_update = addon.exists()
+    existing_marker = None
+    previous_launcher = None
+    if is_update:
+        existing_marker = assert_managed(target)
         if not (addon / ".git").is_dir():
-            raise InstallationError("The add-on Git checkout is missing. No files were changed.")
+            raise InstallationError("The installed add-on Git checkout is missing. No files were changed.")
         if not entry.is_file():
             raise InstallationError("The add-on launcher is missing. No files were changed.")
-        old = assert_managed(target)
-        if sha256(entry) != old.get("launcher_sha256"):
-            raise InstallationError("The launch script has been modified. Refusing to overwrite it.")
+        previous_launcher = entry.read_bytes()
+        if sha256(entry) != existing_marker.get("launcher_sha256"):
+            raise InstallationError("The add-on launcher has been modified; refusing to overwrite it.")
         remote = run_git(["-C", str(addon), "remote", "get-url", "origin"], log=lambda msg: None)
         if remote != repo_url:
-            raise InstallationError("The add-on Git remote is different from the expected repository.")
-        if run_git(["-C", str(addon), "status", "--porcelain", "--untracked-files=no"], log=lambda msg: None):
-            raise InstallationError("Managed add-on files have local changes; commit or revert them before updating.")
-        log("Fetching latest main branch (no releases)...")
-        run_git(["-C", str(addon), "fetch", "origin", "main"], log=log)
-        run_git(["-C", str(addon), "merge", "--ff-only", "FETCH_HEAD"], log=log)
-        ensure_binaries(addon, log=log)
-        commit = run_git(["-C", str(addon), "rev-parse", "HEAD"], log=lambda msg: None)
-        data = {**old, "commit": commit}
-        source_marker(target).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        log(f"Updated to {commit[:12]}. Original PrintExp files remain untouched.")
-        return commit
-    if entry.exists():
+            raise InstallationError("The installed add-on has an unexpected Git remote.")
+        if run_git(["-C", str(addon), "status", "--porcelain", "--untracked-files=no"],
+                   log=lambda msg: None):
+            raise InstallationError("The installed add-on has edited tracked files. No changes were made.")
+    elif entry.exists():
         raise InstallationError(f"'{LAUNCHER_NAME}' already exists. Refusing to overwrite it.")
-    log("Cloning private repository main branch via your installed Git credentials...")
-    # Clone/build in the user profile rather than the protected PrintExp folder.
-    # Installing into Program Files is handled through a separate UAC prompt.
+
     with tempfile.TemporaryDirectory(prefix="uv3d-setup-") as tmp:
         staged = Path(tmp) / "checkout"
-        run_git(["clone", "--branch", "main", "--single-branch", repo_url, str(staged)], log=log)
-        ensure_binaries(staged, log=log)
-        commit = run_git(["-C", str(staged), "rev-parse", "HEAD"], log=lambda msg: None)
-        # shutil.move also supports PrintExp being installed on another drive.
-        # The managed add-on is the only directory written under PrintExp.
-        shutil.move(str(staged), str(addon))
-    try:
-        entry.write_bytes(launcher_text().encode("utf-8"))
-        data = {"format": MARKER_VALUE, "repo": REPOSITORY, "commit": commit,
-                "host_exe_sha256": expected_sha, "launcher_sha256": sha256(entry)}
-        source_marker(target).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    except Exception:
-        entry.unlink(missing_ok=True)
-        remove_managed_directory(addon)
-        raise
+        commit = _clone_release(staged, repo_url, log)
+        if is_update:
+            # This is also a repair for old installations that were moved from
+            # an elevated user's temp directory. The candidate inherits the
+            # target parent's normal ACLs; the old restrictive ACLs are discarded.
+            suffix = uuid.uuid4().hex
+            candidate = target / f"{ADDON_DIR}.staging-{suffix}"
+            backup = target / f"{ADDON_DIR}.backup-{suffix}"
+            backed_up = False
+            installed_candidate = False
+            try:
+                log("Preparing an updated add-on with freshly inherited PrintExp permissions...")
+                shutil.copytree(staged, candidate)
+                local_settings = addon / "config" / "local-stage1.ini"
+                if local_settings.is_file() and not local_settings.is_symlink():
+                    shutil.copy2(local_settings, candidate / "config" / "local-stage1.ini")
+                _verify_package(candidate, staged)
+                new_launcher = launcher_text().encode("utf-8")
+                data = {**existing_marker, "commit": commit,
+                        "launcher_sha256": hashlib.sha256(new_launcher).hexdigest()}
+                (candidate / MARKER_NAME).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+                addon.rename(backup)
+                backed_up = True
+                candidate.rename(addon)
+                installed_candidate = True
+                entry.write_bytes(new_launcher)
+                verify_installed_files(target, staged, commit, expected_sha, log=log)
+            except Exception as exc:
+                if installed_candidate and addon.exists():
+                    remove_managed_directory(addon)
+                if backed_up and backup.exists():
+                    backup.rename(addon)
+                if previous_launcher is not None and entry.exists():
+                    entry.write_bytes(previous_launcher)
+                raise InstallationError(f"Update failed; previous version restored: {exc}") from exc
+            finally:
+                if candidate.exists():
+                    remove_managed_directory(candidate)
+            try:
+                remove_managed_directory(backup)
+            except OSError as exc:
+                # A successful update is safer than undoing it just because
+                # Windows blocked deletion of obsolete, backed-up Git objects.
+                log(f"WARNING: Old add-on backup could not be removed: {backup} ({exc})")
+            log(f"Updated to {commit[:12]}, including repair of inherited file permissions.")
+            return commit
+
+        log("Installing add-on files with the PrintExp folder's inherited permissions...")
+        try:
+            # Never rename/move a folder from %TEMP% into Program Files. Doing
+            # so can retain the ADMIN user's private temp ACL and cause Access
+            # Denied when the standard user launches the installed EXE.
+            shutil.copytree(staged, addon)
+            _verify_package(addon, staged)
+            entry.write_bytes(launcher_text().encode("utf-8"))
+            data = {"format": MARKER_VALUE, "repo": REPOSITORY, "commit": commit,
+                    "host_exe_sha256": expected_sha, "launcher_sha256": sha256(entry)}
+            source_marker(target).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            verify_installed_files(target, staged, commit, expected_sha, log=log)
+        except Exception:
+            entry.unlink(missing_ok=True)
+            if addon.exists():
+                remove_managed_directory(addon)
+            raise
     log(f"Installed {commit[:12]}. Original PrintExp files remain untouched.")
     return commit
 

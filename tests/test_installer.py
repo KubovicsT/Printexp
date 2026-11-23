@@ -6,10 +6,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from addon_manager_core import (ADDON_DIR, LAUNCHER_NAME, InstallationError,
-                                install_or_update, uninstall, validate_target)
+                                install_or_update, uninstall, validate_target,
+                                verify_installed_files)
 
 
 def git(*args, cwd=None):
@@ -67,6 +69,79 @@ class ManagerTests(unittest.TestCase):
         uninstall(self.vendor, log=lambda _: None)
         self.assertEqual({f.name: f.read_bytes() for f in self.vendor.iterdir() if f.is_file()}, original)
         self.assertFalse((self.vendor / ADDON_DIR).exists())
+
+    def test_update_rebuilds_managed_directory_even_on_same_commit(self):
+        self.run_install()
+        first_stat = (self.vendor / ADDON_DIR).stat()
+        first_head = subprocess.check_output(
+            ["git", "-C", str(self.vendor / ADDON_DIR), "rev-parse", "HEAD"], text=True
+        ).strip()
+        second_head = self.run_install()
+        self.assertEqual(first_head, second_head)
+        self.assertNotEqual(first_stat.st_ino, (self.vendor / ADDON_DIR).stat().st_ino)
+        self.assertEqual([], list(self.vendor.glob(ADDON_DIR + ".backup-*")))
+        self.assertEqual([], list(self.vendor.glob(ADDON_DIR + ".staging-*")))
+
+    def test_update_failure_restores_previous_version(self):
+        self.run_install()
+        original_launcher = (self.vendor / LAUNCHER_NAME).read_bytes()
+        original_head = subprocess.check_output(
+            ["git", "-C", str(self.vendor / ADDON_DIR), "rev-parse", "HEAD"], text=True
+        ).strip()
+        original_write = Path.write_bytes
+        failed_once = False
+        def fail_at_final_launcher_write(path, data):
+            nonlocal failed_once
+            if path == self.vendor / LAUNCHER_NAME and not failed_once:
+                failed_once = True
+                raise PermissionError("simulated blocked launcher write")
+            return original_write(path, data)
+        with patch.object(Path, "write_bytes", new=fail_at_final_launcher_write):
+            with self.assertRaises(InstallationError):
+                self.run_install()
+        self.assertTrue(failed_once)
+        self.assertEqual((self.vendor / LAUNCHER_NAME).read_bytes(), original_launcher)
+        self.assertEqual(subprocess.check_output(
+            ["git", "-C", str(self.vendor / ADDON_DIR), "rev-parse", "HEAD"], text=True
+        ).strip(), original_head)
+        self.assertEqual([], list(self.vendor.glob(ADDON_DIR + ".staging-*")))
+
+    def test_post_install_verification_accepts_complete_files(self):
+        head = self.run_install()
+        self.assertIsNone(verify_installed_files(
+            self.vendor, self.repo, head, self.expected, log=lambda _: None))
+
+    def test_post_install_verification_detects_missing_binary(self):
+        head = self.run_install()
+        (self.vendor / ADDON_DIR / "dist" / "windows" / "UV3DPage.dll").unlink()
+        with self.assertRaisesRegex(InstallationError, "missing required file"):
+            verify_installed_files(self.vendor, self.repo, head, self.expected, log=lambda _: None)
+
+    def test_post_install_verification_detects_modified_binary(self):
+        head = self.run_install()
+        (self.vendor / ADDON_DIR / "dist" / "windows" / "PrintExp3DLauncher.exe").write_bytes(b"damaged")
+        with self.assertRaisesRegex(InstallationError, "corrupted or empty file"):
+            verify_installed_files(self.vendor, self.repo, head, self.expected, log=lambda _: None)
+
+    def test_post_install_verification_detects_missing_launcher(self):
+        head = self.run_install()
+        (self.vendor / LAUNCHER_NAME).unlink()
+        with self.assertRaisesRegex(InstallationError, "launch script is missing"):
+            verify_installed_files(self.vendor, self.repo, head, self.expected, log=lambda _: None)
+
+    def test_update_verification_failure_rolls_back(self):
+        self.run_install()
+        original_launcher = (self.vendor / LAUNCHER_NAME).read_bytes()
+        original_head = subprocess.check_output(
+            ["git", "-C", str(self.vendor / ADDON_DIR), "rev-parse", "HEAD"], text=True
+        ).strip()
+        with patch("addon_manager_core.verify_installed_files", side_effect=InstallationError("deliberate verification failure")):
+            with self.assertRaisesRegex(InstallationError, "previous version restored"):
+                self.run_install()
+        self.assertEqual((self.vendor / LAUNCHER_NAME).read_bytes(), original_launcher)
+        self.assertEqual(subprocess.check_output(
+            ["git", "-C", str(self.vendor / ADDON_DIR), "rev-parse", "HEAD"], text=True
+        ).strip(), original_head)
 
     def test_refuses_overwriting_user_file(self):
         (self.vendor / LAUNCHER_NAME).write_text("custom owner file")

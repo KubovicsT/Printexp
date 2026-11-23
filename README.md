@@ -10,7 +10,7 @@ There is just one user-facing management window:
 
 - **PrintExp installation folder** with a Browse button, remembered in `%LOCALAPPDATA%\PrintExp3DAddOn\selected-install.txt`.
 - **Install Add-on** — fetches `main` (no GitHub releases), installs any missing Python/Git/C++ Build Tools, builds native binaries when needed and installs only our add-on files.
-- **Update from main** — updates an installed add-on from the latest `main` branch, installing missing dependencies automatically.
+- **Update from main** — downloads the latest `main` into a temporary workspace, creates a replacement add-on directory with normal PrintExp-inherited permissions, and swaps it in with rollback protection. This also repairs the older installer version that retained administrator-only permissions.
 - **Uninstall Add-on** — removes only the managed add-on folder and checksum-verified launcher.
 - **Launch PrintExp + 3D** — runs the Stage 1 experimental page; does not require administrator permission.
 
@@ -19,6 +19,18 @@ There is just one user-facing management window:
 If Python or Git is missing, they are downloaded via WinGet or signed official installers. If the native x64 components are not prebuilt and no compiler is found, the Microsoft C++ Build Tools are installed automatically (a large download; when `X:` is available this is the preferred location). Dependencies are checked only when needed for Install or Update, not before showing the UI. Uninstall needs Python but not Git or compiler.
 
 GitHub is a **private repository**; Git Credential Manager may require your GitHub sign-in, even after UAC. Changing to a different administrator account can require a separate sign-in.
+
+## Fix for the earlier "Access is denied" installation
+
+The earlier installer moved the Git checkout straight from the elevated user's `%TEMP%` directory into `Program Files (x86)`. On the same Windows drive this can preserve the source directory's restrictive access permissions, leaving the normal user unable to execute `UV3DAddOn\dist\windows\PrintExp3DLauncher.exe` or read/update parts of the add-on.
+
+**After every Install and Update, verification is mandatory before success is reported.** The elevated worker checks all tracked source files, the two compiled Windows binaries, Git revision, managed installation marker and launch script, including SHA-256 checksums. A missing/corrupt file causes installation failure or update rollback. After UAC, the normal-user window independently reads/checks the critical files to detect administrator-only access permissions. Only a complete, readable installation reports success. A failed normal-user access check leaves the files in place for diagnosis rather than silently calling it successful.
+
+The installer now **copies** the checkout into a newly created folder under PrintExp, causing Windows to inherit that location's normal ACLs instead. **Update from main always builds a fresh folder and swaps it in, even if the Git commit has not changed**, so it can repair an already installed add-on. It preserves the old add-on until the replacement has passed verification, rolls back if the swap fails, and does not modify the original PrintExp executable or vendor DLLs. The manager no longer checks the old install marker without permission before showing the UAC prompt.
+
+To recover from the old build: close PrintExp, download the current installer ZIP, open `Start-Installer.vbs`, and click **Update from main**. If update still fails, the existing managed directory is left in place. The status message and `%LOCALAPPDATA%\PrintExp3DAddOn\last-operation.log` can be used to identify where Windows denied access. Do not change global Windows security settings or disable antivirus protections to make an injected tab work.
+
+If the native launcher can start but Windows refuses the experimental page hook, it now reports a **Win32 error code**. That problem is separate from filesystem permissions and may require using a supported Hoson interface instead.
 
 ## Supported PrintExp version and safety
 

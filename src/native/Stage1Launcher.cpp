@@ -19,6 +19,24 @@ static void Error(const wchar_t* reason) {
     MessageBoxW(nullptr,reason,L"PrintExp 3D Stage 1",MB_OK|MB_ICONERROR);
 }
 
+static void ErrorWin32(const wchar_t* operation, DWORD errorCode) {
+    std::wstring message = operation;
+    message += L"\nWindows error code: " + std::to_wstring(errorCode);
+    wchar_t* systemMessage = nullptr;
+    const DWORD count = FormatMessageW(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr, errorCode, 0, reinterpret_cast<LPWSTR>(&systemMessage), 0, nullptr);
+    if (count && systemMessage) {
+        message += L"\n";
+        message += systemMessage;
+    }
+    if (systemMessage) LocalFree(systemMessage);
+    message += L"\n\nThe printer executable was not patched. ";
+    message += L"If error 5 persists after Update from main repairs permissions, ";
+    message += L"Windows security rules or process elevation may be blocking the extension.";
+    Error(message.c_str());
+}
+
 static std::wstring Folder(const std::wstring& path) {
     size_t slash = path.find_last_of(L"\\/");
     return slash==std::wstring::npos ? L"." : path.substr(0,slash);
@@ -90,7 +108,7 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
     if(!GetModuleFileNameW(nullptr,own,MAX_PATH)) return 4;
     std::wstring dll=Folder(own)+L"\\UV3DPage.dll";
     HMODULE localDll=LoadLibraryW(dll.c_str());
-    if(!localDll) {Error(L"Could not load UV3DPage.dll.");return 5;}
+    if(!localDll) {ErrorWin32(L"Could not load UV3DPage.dll.", GetLastError());return 5;}
     auto hookproc=reinterpret_cast<HOOKPROC>(GetProcAddress(localDll,"UV3D_GetMessageHook"));
     if(!hookproc) {Error(L"3D hook export missing.");FreeLibrary(localDll);return 6;}
     std::wstring command=L"\""+executable+L"\"";
@@ -100,7 +118,8 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
     PROCESS_INFORMATION pi={};
     if(!CreateProcessW(executable.c_str(),cmd.data(),nullptr,nullptr,FALSE,0,nullptr,
                        working.c_str(),&startup,&pi)) {
-        Error(L"Could not start PrintExp. Is it already running, or does it require elevation?");
+        const DWORD code = GetLastError();
+        ErrorWin32(L"Could not start PrintExp. Check its permissions and elevation requirements.", code);
         FreeLibrary(localDll);return 7;
     }
     WaitForInputIdle(pi.hProcess,15000);
@@ -118,8 +137,9 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
     HANDLE ready=CreateEventW(nullptr,TRUE,FALSE,eventName.c_str());
     HHOOK hook=SetWindowsHookExW(WH_GETMESSAGE,hookproc,localDll,f.tid);
     if(!hook) {
-        Error(L"Windows blocked the 3D module hook.\n"
-              L"PrintExp is running unchanged. See Windows security settings and process privileges.");
+        const DWORD code = GetLastError();
+        ErrorWin32(L"Windows blocked the experimental 3D module hook.\n"
+                     L"PrintExp is running unchanged.", code);
         if(ready)CloseHandle(ready);
         CloseHandle(pi.hThread);CloseHandle(pi.hProcess);FreeLibrary(localDll);return 9;
     }
