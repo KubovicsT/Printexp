@@ -508,7 +508,11 @@ $script:ContinueButton.Add_Click({
         }
         Log-Message 'Dependencies ready. Opening the graphical PrintExp add-on installer...'
         $form.Hide()
-        & $script:Python (Join-Path $script:Root 'installer.py') --target $selected
+        if ($selected) {
+            & $script:Python (Join-Path $script:Root 'installer.py') --target $selected
+        } else {
+            & $script:Python (Join-Path $script:Root 'installer.py')
+        }
         if ($LASTEXITCODE -ne 0) { throw "The installer exited with code $LASTEXITCODE." }
         $form.Close()
     } catch {
