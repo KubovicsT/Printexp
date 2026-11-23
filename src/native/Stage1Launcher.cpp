@@ -239,8 +239,19 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
         Sleep(125);
     }
     if(!f.hwnd) {
-        Error(L"PrintExp launched, but its main window was not detected.\n"
-              L"PrintExp is still running normally without the 3D page.");
+        DWORD exitCode=STILL_ACTIVE;
+        const bool exited=(WaitForSingleObject(pi.hProcess,0)==WAIT_OBJECT_0);
+        if (exited) GetExitCodeProcess(pi.hProcess,&exitCode);
+        StageLog(L"FAILED: PrintExp main window unavailable; host exited=" +
+                 std::to_wstring(exited?1:0) + L" exit code=" + std::to_wstring(exitCode));
+        if (exited) {
+            Error((L"PrintExp exited during startup before its main window appeared.\n"
+                   L"Windows process exit code: " + std::to_wstring(exitCode) +
+                   L"\nCheck whether offline debug mode is enabled in Project.ini.").c_str());
+        } else {
+            Error(L"PrintExp launched but no usable main window appeared.\n"
+                  L"Check UV3DAddOn\\diagnostics\\stage1.log.");
+        }
         CloseHandle(pi.hThread);CloseHandle(pi.hProcess);FreeLibrary(localDll);return 8;
     }
     wchar_t targetTitle[256] = {};
@@ -263,19 +274,34 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
         CloseHandle(pi.hThread);CloseHandle(pi.hProcess);FreeLibrary(localDll);return 9;
     }
     bool success=false;
-    for(int i=0;i<80;i++) {
+    bool hostExited=false;
+    DWORD hostExitCode=STILL_ACTIVE;
+    for(int i=0;i<200;i++) {
         if(ready && WaitForSingleObject(ready,125)==WAIT_OBJECT_0) {success=true;break;}
         PostMessageW(f.hwnd,WM_NULL,0,0); // Trigger the PrintExp UI thread's hook.
-        if(WaitForSingleObject(pi.hProcess,0)==WAIT_OBJECT_0) break;
+        if(WaitForSingleObject(pi.hProcess,0)==WAIT_OBJECT_0) {
+            hostExited=true;
+            GetExitCodeProcess(pi.hProcess,&hostExitCode);
+            break;
+        }
     }
     UnhookWindowsHookEx(hook);
     if(ready)CloseHandle(ready);
     CloseHandle(pi.hThread);CloseHandle(pi.hProcess);
     FreeLibrary(localDll);
     if(!success) {
-        StageLog(L"FAILED: UI did not signal readiness (window may be splash, hook did not execute, or UI creation failed)");
-        Error(L"3D tab did not initialize. PrintExp is still running normally.\n"
-              L"No printer commands were issued, and no PrintExp files were changed.");
+        StageLog(L"FAILED: Native 3D registration did not signal readiness; PrintExp exited=" +
+                 std::to_wstring(hostExited?1:0) +
+                 L"; exit code=" + std::to_wstring(hostExitCode));
+        if(hostExited) {
+            Error((L"PrintExp exited before the 3D page initialized.\n"
+                   L"Process exit code: " + std::to_wstring(hostExitCode) +
+                   L"\nCheck offline debug configuration and diagnostics/native-page.log.").c_str());
+        } else {
+            Error(L"PrintExp started, but native 3D registration did not complete.\n"
+                  L"Inspect UV3DAddOn\\diagnostics\\native-page.log.\n"
+                  L"No printer commands were issued.");
+        }
         return 10;
     }
     StageLog(L"SUCCESS: injected UI reported readiness");
