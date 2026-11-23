@@ -11,13 +11,19 @@ root = fso.GetParentFolderName(WScript.ScriptFullName)
 preference = shell.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\PrintExp3DAddOn\selected-install.txt"
 If fso.FileExists(preference) Then
     On Error Resume Next
-    Set reader = fso.OpenTextFile(preference, 1, False, -1)
+    ' PowerShell saves this selection as UTF-8 without BOM, not UTF-16.
+    ' ADODB.Stream reads the same encoding, including non-ASCII folder names.
+    Set reader = CreateObject("ADODB.Stream")
+    reader.Type = 2
+    reader.Charset = "utf-8"
+    reader.Open
+    reader.LoadFromFile preference
     If Err.Number = 0 Then
-        selected = Trim(reader.ReadAll)
-        reader.Close
+        selected = Trim(reader.ReadText)
     Else
         Err.Clear
     End If
+    reader.Close
     On Error GoTo 0
     If Len(selected) > 0 Then
         managed = fso.BuildPath(selected, "UV3DAddOn")
