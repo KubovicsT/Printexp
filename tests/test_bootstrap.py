@@ -89,6 +89,14 @@ class SingleWindowContractTests(unittest.TestCase):
         self.assertIn("Get-FileHash -LiteralPath $path", ui)
         self.assertIn("verify_installed_files(target, staged, commit, expected_sha, log=log)", core)
 
+    def test_update_shows_actual_worker_error_instead_of_only_exit_code(self):
+        ui = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
+        self.assertIn("function Get-ActionFailureDetail", ui)
+        self.assertIn("Get-Content -LiteralPath $LogFile -Tail 100", ui)
+        self.assertIn('throw "Add-on $Action failed: $detail"', ui)
+        self.assertIn('$rootCause = Get-ActionFailureDetail $script:WorkerLog', ui)
+        self.assertIn("last-operation.log", ui)
+
     def test_loopback_simulation_is_ui_opt_in_and_UAC_guarded(self):
         ui = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
         actions = (ROOT / "addon_action.py").read_text(encoding="utf-8")

@@ -323,6 +323,28 @@ function Ensure-CompilerIfNeeded([string]$Action, [string]$InstallFolder) {
     if (-not $script:Compiler) { throw 'Microsoft C++ Build Tools could not be detected after installation. Restart Windows and try again.' }
 }
 
+function Get-ActionFailureDetail([string]$LogFile) {
+    # The Python action writes its actual error before this PowerShell worker
+    # turns a nonzero exit status into a generic error message.
+    # Show that original error instead of only "exit 1".
+    if ([string]::IsNullOrWhiteSpace($LogFile)) { return '' }
+    try {
+        if (-not (Test-Path -LiteralPath $LogFile -PathType Leaf)) { return '' }
+        $recent = @(Get-Content -LiteralPath $LogFile -Tail 100 -ErrorAction Stop)
+        $errors = @($recent | Where-Object { $_ -match '^ERROR:\s*(.+)' })
+        foreach ($line in $errors) {
+            $detail = ([string]$line).Substring(6).Trim()
+            if ($detail -and $detail -notmatch '^Add-on .+ failed \(exit [0-9]+\)') {
+                # Preserve the underlying reason while avoiding extremely long
+                # messages that would make the WinForms dialog unusable.
+                if ($detail.Length -gt 1800) { return $detail.Substring(0, 1800) + '...' }
+                return $detail
+            }
+        }
+    } catch { }
+    return ''
+}
+
 function Run-ElevatedAction([string]$Action, [string]$InstallFolder) {
     if (-not (Test-Administrator)) { throw 'Administrator permission is required for Install, Update and Uninstall.' }
     if ($Action -notin @('install','update','uninstall','offline-enable','offline-disable','vc2010-install','simulate-enable','simulate-disable')) { throw 'Unsupported modification action.' }
@@ -354,7 +376,13 @@ function Run-ElevatedAction([string]$Action, [string]$InstallFolder) {
     Log-Message "Running $Action in the selected PrintExp directory..."
     $actionScript = Join-Path $script:Root 'addon_action.py'
     & $script:Python $actionScript --action $Action --target $InstallFolder --log-file $script:WorkerLog
-    if ($LASTEXITCODE -ne 0) { throw "Add-on $Action failed (exit $LASTEXITCODE). See the operation log." }
+    if ($LASTEXITCODE -ne 0) {
+        $detail = Get-ActionFailureDetail $script:WorkerLog
+        if ($detail) {
+            throw "Add-on $Action failed: $detail"
+        }
+        throw "Add-on $Action failed (exit $LASTEXITCODE). See the operation log."
+    }
 }
 
 function Invoke-Worker([string]$RequestFile) {
@@ -523,6 +551,12 @@ function Finish-Modification {
         if (Test-Path -LiteralPath $script:WorkerLog) {
             [IO.Directory]::CreateDirectory($script:PreferenceFolder) | Out-Null
             Copy-Item -LiteralPath $script:WorkerLog -Destination $script:SavedLogFile -Force
+            if (-not $success) {
+                $rootCause = Get-ActionFailureDetail $script:WorkerLog
+                if ($rootCause -and $message -match 'failed \(exit [0-9]+\)') {
+                    $message = "Add-on $($script:CurrentAction) failed: $rootCause"
+                }
+            }
         }
     } catch { $message = "Unable to read worker result: $($_.Exception.Message)" }
     Set-Busy $false

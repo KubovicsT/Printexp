@@ -318,3 +318,18 @@ On startup failures, save the `simulated-controller.ndjson`,
 `native-page.log` and `stage1.log` files. They distinguish transport
 connection, missing protocol replies, native UI registration, and PrintExp
 startup failures. Printing and motion controls remain disabled in our page.
+
+
+## Update from main failures
+
+The manager now displays the **underlying error from the elevated Python
+worker** instead of reducing it to an unhelpful `exit 1` message. It also
+preserves an operation log at
+`%LOCALAPPDATA%\PrintExp3DAddOn\last-operation.log`. If GitHub access,
+Git credentials under UAC, a running PrintExp process, or a modified tracked
+file blocks updating, the actual reason appears in the error dialog and log.
+
+A failed update does not justify deleting or reinstalling the add-on:
+the transactional updater is designed to preserve the previous version.
+If a failure persists, share the contents of `last-operation.log` (remove
+credentials or tokens first, if any) before retrying.
