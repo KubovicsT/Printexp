@@ -333,3 +333,29 @@ A failed update does not justify deleting or reinstalling the add-on:
 the transactional updater is designed to preserve the previous version.
 If a failure persists, share the contents of `last-operation.log` (remove
 credentials or tokens first, if any) before retrying.
+
+
+## Windows error 32 when updating from an installed manager
+
+A prior manager was executed directly under
+`PrintExp/UV3DAddOn/Bootstrap-Installer.ps1` and launched the Python
+update worker from `UV3DAddOn/addon_action.py`. Windows can lock a
+directory when a process has it as its **current working directory**,
+preventing the transactional updater from renaming `UV3DAddOn` to its
+temporary backup (WinError 32).
+
+The current manager switches to a neutral Windows temp working directory
+and copies the **worker plus every local Python import** to a temporary
+detached execution folder before invoking it. The manager launcher likewise
+does not inherit `UV3DAddOn` as its current directory. The temporary copy
+is removed when its worker exits, and all permanent add-on files, original
+configuration backups and Rollback remain inside the selected PrintExp
+installation. The update still verifies installed files and restores the
+previous version on failure.
+
+To repair an installation **already running the old manager**, download
+the latest ZIP and run its `Bootstrap-Installer.ps1` from outside
+`UV3DAddOn` (PowerShell `-NoProfile -STA -ExecutionPolicy Bypass -File`).
+The older `Start-Installer.vbs` redirects to its installed copy and can
+therefore reintroduce this lock during the first repair. Close File Explorer
+windows or terminals currently inside `UV3DAddOn` before retrying.

@@ -11,6 +11,12 @@ param([switch]$CheckOnly, [string]$WorkerRequest = "")
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Never keep this manager's process current directory inside UV3DAddOn.
+# Windows refuses to rename a directory when a process has it as CWD.
+# The source files remain addressed using $script:Root.
+$script:NeutralWorkingDirectory = [IO.Path]::GetTempPath()
+Set-Location -LiteralPath $script:NeutralWorkingDirectory
+[IO.Directory]::SetCurrentDirectory($script:NeutralWorkingDirectory)
 $script:Python = $null
 $script:Git = $null
 $script:Compiler = $null
@@ -374,14 +380,43 @@ function Run-ElevatedAction([string]$Action, [string]$InstallFolder) {
         Ensure-CompilerIfNeeded $Action $InstallFolder
     }
     Log-Message "Running $Action in the selected PrintExp directory..."
-    $actionScript = Join-Path $script:Root 'addon_action.py'
-    & $script:Python $actionScript --action $Action --target $InstallFolder --log-file $script:WorkerLog
-    if ($LASTEXITCODE -ne 0) {
-        $detail = Get-ActionFailureDetail $script:WorkerLog
-        if ($detail) {
-            throw "Add-on $Action failed: $detail"
+    # The old updater executed addon_action.py FROM UV3DAddOn while trying
+    # to rename that very directory. Instead copy the worker and all its
+    # local imports into a disposable directory outside the installation.
+    # The worker must never keep executable or current-directory handles
+    # under the folder it is replacing.
+    $workerDir = Join-Path $script:NeutralWorkingDirectory ('PrintExp3D-detached-' + [guid]::NewGuid().ToString('N'))
+    $workerFiles = @('addon_action.py','addon_manager_core.py','host_backup.py',
+                     'offline_profile.py','simulation_profile.py')
+    try {
+        [IO.Directory]::CreateDirectory($workerDir) | Out-Null
+        foreach ($filename in $workerFiles) {
+            $source = Join-Path $script:Root $filename
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+                throw "The add-on manager worker source is missing: $filename"
+            }
+            Copy-Item -LiteralPath $source -Destination (Join-Path $workerDir $filename) -Force -ErrorAction Stop
         }
-        throw "Add-on $Action failed (exit $LASTEXITCODE). See the operation log."
+        $actionScript = Join-Path $workerDir 'addon_action.py'
+        Push-Location -LiteralPath $workerDir
+        try {
+            & $script:Python $actionScript --action $Action --target $InstallFolder --log-file $script:WorkerLog
+            $workerExitCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+        if ($workerExitCode -ne 0) {
+            $detail = Get-ActionFailureDetail $script:WorkerLog
+            if ($detail) {
+                throw "Add-on $Action failed: $detail"
+            }
+            throw "Add-on $Action failed (exit $workerExitCode). See the operation log."
+        }
+    } finally {
+        # This directory is owned exclusively by this invocation.
+        if (Test-Path -LiteralPath $workerDir -PathType Container) {
+            Remove-Item -LiteralPath $workerDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 

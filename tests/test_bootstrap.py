@@ -89,6 +89,20 @@ class SingleWindowContractTests(unittest.TestCase):
         self.assertIn("Get-FileHash -LiteralPath $path", ui)
         self.assertIn("verify_installed_files(target, staged, commit, expected_sha, log=log)", core)
 
+    def test_update_worker_detached_from_addon_folder_to_avoid_winerror32(self):
+        ui = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
+        vbs = (ROOT / "Start-Installer.vbs").read_text(encoding="utf-8")
+        for name in ("addon_action.py", "addon_manager_core.py", "host_backup.py",
+                     "offline_profile.py", "simulation_profile.py"):
+            self.assertIn(name, ui)
+        self.assertIn("PrintExp3D-detached-", ui)
+        self.assertIn("Copy-Item -LiteralPath $source -Destination", ui)
+        self.assertIn("Push-Location -LiteralPath $workerDir", ui)
+        self.assertIn("Set-Location -LiteralPath $script:NeutralWorkingDirectory", ui)
+        self.assertIn("SetCurrentDirectory($script:NeutralWorkingDirectory)", ui)
+        self.assertIn("shell.CurrentDirectory = runFrom", vbs)
+        self.assertNotIn("Join-Path $script:Root 'addon_action.py'\n    & $script:Python", ui)
+
     def test_update_shows_actual_worker_error_instead_of_only_exit_code(self):
         ui = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
         self.assertIn("function Get-ActionFailureDetail", ui)

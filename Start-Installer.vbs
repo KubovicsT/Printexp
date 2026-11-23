@@ -35,5 +35,14 @@ If fso.FileExists(preference) Then
     End If
 End If
 
+' Launch outside UV3DAddOn so the child PowerShell process never inherits
+' a working-directory handle that prevents the updater renaming the folder.
+' All actual source paths are absolute and remain under the chosen root.
+Dim runFrom
+runFrom = fso.GetParentFolderName(root)
+If Len(runFrom) = 0 Or Not fso.FolderExists(runFrom) Then
+    runFrom = shell.ExpandEnvironmentStrings("%TEMP%")
+End If
+shell.CurrentDirectory = runFrom
 command = "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & root & "\Bootstrap-Installer.ps1"""
 shell.Run command, 0, False
