@@ -23,7 +23,7 @@ This repository contains a reversible add-on for the **specific** PrintExp insta
 2. It checks Python 3 (including `tkinter`), Git for Windows, and whether compiled x64 page binaries or the Microsoft C++ compiler are present.
 3. Click **Install missing tools and open installer**. Missing Python and Git are installed automatically through Windows Package Manager (`winget`), with signed official-installation fallbacks if WinGet is missing or fails. Existing installations are reused.
 4. If the native x64 binaries are not included and no compiler is installed, the window offers **Microsoft Visual Studio 2022 C++ Build Tools**. This is a **large download**, may require an administrator prompt, and can be disabled if you don't want the toolchain. If disabled while needed, installation cannot proceed. On machines with an `X:` drive, the proposed Build Tools location is `X:\VisualStudioBuildTools` to avoid filling `C:`; you can change it before installing. Microsoft may still store shared installer components on `C:`.
-5. After dependencies are ready, the usual graphical PrintExp add-on installer opens automatically. Choose the folder containing `PrintExp_X64.exe` and `DeviceManager.dll`, then click **Install**. If Windows protects this folder (for example `C:\\Program Files (x86)\\`), the manager checks permission and requests elevation through the standard Windows UAC prompt **only for the add-on manager**. You do not need to run the whole dependency bootstrap as administrator.
+5. The first window includes **Update from main**, and remembers the chosen PrintExp installation in `%LOCALAPPDATA%\\PrintExp3DAddOn\\selected-install.txt`. After dependencies are ready, the usual graphical PrintExp add-on installer opens automatically. Choose the folder containing `PrintExp_X64.exe` and `DeviceManager.dll`, then click **Install**. If Windows protects this folder (for example `C:\\Program Files (x86)\\`), the manager checks permission and requests elevation through the standard Windows UAC prompt **only for the add-on manager**. You do not need to run the whole dependency bootstrap as administrator.
 6. The installer downloads and builds the latest **private** `main` branch in a writable Windows temporary directory, moves the finished add-on into `PrintExp/UV3DAddOn/`, and creates `PrintExp/Start PrintExp with 3D.cmd`. It never creates staging folders inside the vendor directory.
 7. With the printer idle, preferably disconnected, click **Launch PrintExp + 3D**. You should see the Stage 1 test tab near the top-right of the existing PrintExp window.
 
@@ -35,7 +35,7 @@ If your GitHub account has not already been authenticated for Git, Git Credentia
 
 ## Updates (no GitHub releases)
 
-Click **Update from main** in the same manager window. The updater does a Git fetch followed by a fast-forward-only merge of `main`, updating the add-on source and compiled DLL/EXE in place. It refuses to update locally edited tracked files. `PrintExp_X64.exe` and other vendor files are never updated by this tool. Close PrintExp before updating.
+Click **Update from main** in the **first Dependency Setup window**. Choose the PrintExp folder there (the selection is remembered across launches), close PrintExp, and click Update. Python and Git are installed if missing. The update runs directly from this first window, requesting Windows administrator permission when needed. The updater does a Git fetch followed by a fast-forward-only merge of `main`, updating the add-on source and compiled DLL/EXE in place. It refuses to update locally edited tracked files. `PrintExp_X64.exe` and other vendor files are never updated by this tool. Close PrintExp before updating.
 
 The repository's Windows GitHub Action builds both native x64 components with MSVC and commits them back to **main** under `dist/windows/`. The script deliberately does not use GitHub releases. If the binaries are not yet on `main`, the installer automatically builds them locally using the compiler installed during dependency setup.
 
@@ -49,6 +49,7 @@ Close PrintExp and click **Uninstall**. Only the managed `UV3DAddOn/` directory 
 README.md
 Start-Installer.cmd
 Bootstrap-Installer.ps1         Native Windows dependency check/download UI
+update_addon.py              First-window update command, without opening the installer GUI
 installer.py                  Tkinter graphical manager
 addon_manager_core.py        Git checkout, validation, update and uninstall
 config/stage1.ini             provisional native tab position

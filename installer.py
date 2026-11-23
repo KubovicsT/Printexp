@@ -17,6 +17,22 @@ from addon_manager_core import (ADDON_DIR, LAUNCHER_NAME, InstallationError,
                                 install_or_update, uninstall, validate_target)
 
 
+SELECTION_FILE = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "PrintExp3DAddOn" / "selected-install.txt"
+
+def save_selection(folder: str) -> None:
+    try:
+        SELECTION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SELECTION_FILE.write_text(folder, encoding="utf-8")
+    except OSError:
+        pass
+
+def remembered_selection() -> str:
+    try:
+        return SELECTION_FILE.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return ""
+
+
 def target_requires_elevation(folder: Path) -> bool:
     """Probe write access without changing any vendor files."""
     destination = Path(folder) / ADDON_DIR
@@ -59,10 +75,11 @@ class Installer(tk.Tk):
         self.minsize(660, 420)
         self.resizable(True, True)
         self.configure(background="#18212b")
-        self.folder = tk.StringVar(value=initial_target)
+        self.folder = tk.StringVar(value=initial_target or remembered_selection())
         self.events: queue.Queue[tuple[str, str]] = queue.Queue()
         self.busy = False
         self._build()
+        self.protocol('WM_DELETE_WINDOW', self._close)
         self.after(80, self._drain)
         if auto_action:
             # Show the elevated window first, then request the usual confirmation.
@@ -91,8 +108,6 @@ class Installer(tk.Tk):
         actions.pack(anchor="w", pady=(0, 12))
         self.install_btn = ttk.Button(actions, text="Install", command=lambda: self._operate("install"))
         self.install_btn.pack(side="left", padx=(0, 8))
-        self.update_btn = ttk.Button(actions, text="Update from main", command=lambda: self._operate("update"))
-        self.update_btn.pack(side="left", padx=(0, 8))
         self.uninstall_btn = ttk.Button(actions, text="Uninstall", command=lambda: self._operate("uninstall"))
         self.uninstall_btn.pack(side="left", padx=(0, 8))
         self.launch_btn = ttk.Button(actions, text="Launch PrintExp + 3D", command=self._launch)
@@ -109,6 +124,13 @@ class Installer(tk.Tk):
         selection = filedialog.askdirectory(title="Select PrintExp installation directory")
         if selection:
             self.folder.set(selection)
+            save_selection(selection)
+
+    def _close(self) -> None:
+        folder = self.folder.get().strip()
+        if folder and (Path(folder) / "PrintExp_X64.exe").is_file():
+            save_selection(folder)
+        self.destroy()
 
     def _log(self, line: str) -> None:
         self.log.configure(state="normal")
@@ -123,6 +145,8 @@ class Installer(tk.Tk):
         if not folder:
             messagebox.showerror("Choose PrintExp", "Select the folder containing PrintExp_X64.exe.")
             return
+        if (Path(folder) / "PrintExp_X64.exe").is_file():
+            save_selection(folder)
         # Validate before requesting elevation. Do not display a UAC prompt for
         # an incorrect folder or unsupported PrintExp executable.
         try:
@@ -143,6 +167,9 @@ class Installer(tk.Tk):
             self._log("ERROR: " + str(exc))
             messagebox.showerror("Installation location", str(exc))
             return
+        if action == "install" and (Path(folder) / ADDON_DIR).exists():
+            messagebox.showinfo("Already installed", "Use Update from main in the first dependency-setup window.")
+            return
         if action in ("install", "update") and not messagebox.askyesno(
             "Experimental native page",
             "Stage 1 temporarily loads a new UI DLL into PrintExp using a targeted Windows "
@@ -154,7 +181,7 @@ class Installer(tk.Tk):
             "The original PrintExp installation will remain untouched."):
             return
         self.busy = True
-        for button in (self.install_btn, self.update_btn, self.uninstall_btn, self.launch_btn):
+        for button in (self.install_btn, self.uninstall_btn, self.launch_btn):
             button.configure(state="disabled")
         def task() -> None:
             try:
@@ -164,6 +191,7 @@ class Installer(tk.Tk):
                     install_or_update(Path(folder), log=lambda line: self.events.put(("log", line)))
                 else:
                     uninstall(Path(folder), log=lambda line: self.events.put(("log", line)))
+                save_selection(folder)
                 self.events.put(("done", action))
             except Exception as exc:
                 self.events.put(("error", str(exc)))
@@ -179,7 +207,7 @@ class Installer(tk.Tk):
                 self._log(data)
             else:
                 self.busy = False
-                for button in (self.install_btn, self.update_btn, self.uninstall_btn, self.launch_btn):
+                for button in (self.install_btn, self.uninstall_btn, self.launch_btn):
                     button.configure(state="normal")
                 if kind == "error":
                     self._log("ERROR: " + data)
@@ -193,6 +221,8 @@ class Installer(tk.Tk):
         if not folder:
             messagebox.showerror("Select a folder", "Select your PrintExp installation first.")
             return
+        if (Path(folder) / "PrintExp_X64.exe").is_file():
+            save_selection(folder)
         script = Path(folder) / LAUNCHER_NAME
         if not script.is_file():
             messagebox.showerror("Not installed", "Click Install / Update first.")
@@ -211,6 +241,6 @@ class Installer(tk.Tk):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PrintExp 3D add-on manager")
     parser.add_argument("--target", default="", help="Selected PrintExp installation folder")
-    parser.add_argument("--auto-action", choices=("install", "update", "uninstall"))
+    parser.add_argument("--auto-action", choices=("install", "uninstall"))
     args = parser.parse_args()
     Installer(initial_target=args.target, auto_action=args.auto_action).mainloop()

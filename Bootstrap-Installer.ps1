@@ -21,6 +21,9 @@ $script:StatusLabel = $null
 $script:ContinueButton = $null
 $script:BuildToolsCheckbox = $null
 $script:BuildToolsPath = $null
+$script:PrintExpPath = $null
+$script:UpdateButton = $null
+$script:SelectionFile = Join-Path $env:LOCALAPPDATA 'PrintExp3DAddOn\selected-install.txt'
 
 # Installer binaries must come from identified, trusted publishers. This fixed
 # Python fallback is a PSF-published Windows installer with a published checksum;
@@ -237,8 +240,8 @@ Refresh-Status
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'PrintExp 3D Add-on - Dependency Setup'
-$form.Size = New-Object System.Drawing.Size(680, 565)
-$form.MinimumSize = New-Object System.Drawing.Size(680, 565)
+$form.Size = New-Object System.Drawing.Size(680, 645)
+$form.MinimumSize = New-Object System.Drawing.Size(680, 645)
 $form.StartPosition = 'CenterScreen'
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
 $script:Form = $form
@@ -289,20 +292,155 @@ $script:LogBox.Size = New-Object System.Drawing.Size(620, 151)
 $script:LogBox.Anchor = 'Top,Bottom,Left,Right'
 $form.Controls.Add($script:LogBox)
 
+$folderLabel = New-Object System.Windows.Forms.Label
+$folderLabel.Text = 'PrintExp installation folder (remembered automatically):'
+$folderLabel.Location = New-Object System.Drawing.Point(20, 466)
+$folderLabel.Size = New-Object System.Drawing.Size(635, 24)
+$form.Controls.Add($folderLabel)
+
+$script:PrintExpPath = New-Object System.Windows.Forms.TextBox
+$script:PrintExpPath.Location = New-Object System.Drawing.Point(20, 494)
+$script:PrintExpPath.Size = New-Object System.Drawing.Size(525, 27)
+$script:PrintExpPath.Anchor = 'Bottom,Left,Right'
+$form.Controls.Add($script:PrintExpPath)
+
+$browse = New-Object System.Windows.Forms.Button
+$browse.Text = 'Browse...'
+$browse.Location = New-Object System.Drawing.Point(552, 494)
+$browse.Size = New-Object System.Drawing.Size(88, 30)
+$browse.Anchor = 'Bottom,Right'
+$browse.Add_Click({
+    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dialog.Description = 'Select the folder containing PrintExp_X64.exe'
+    $candidate = $script:PrintExpPath.Text.Trim()
+    if ($candidate -and (Test-Path -LiteralPath $candidate)) { $dialog.SelectedPath = $candidate }
+    if ($dialog.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) {
+        $script:PrintExpPath.Text = $dialog.SelectedPath
+        Save-PrintExpSelection $dialog.SelectedPath
+    }
+    $dialog.Dispose()
+})
+$form.Controls.Add($browse)
+
+$script:PrintExpPath.Add_Leave({
+    $selected = $script:PrintExpPath.Text.Trim()
+    if ($selected -and (Test-Path -LiteralPath (Join-Path $selected 'PrintExp_X64.exe'))) {
+        Save-PrintExpSelection $selected
+    }
+})
+$form.Add_FormClosing({
+    $selected = $script:PrintExpPath.Text.Trim()
+    if ($selected -and (Test-Path -LiteralPath (Join-Path $selected 'PrintExp_X64.exe'))) {
+        Save-PrintExpSelection $selected
+    }
+})
+
+$script:UpdateButton = New-Object System.Windows.Forms.Button
+$script:UpdateButton.Text = 'Update from main'
+$script:UpdateButton.Location = New-Object System.Drawing.Point(136, 551)
+$script:UpdateButton.Size = New-Object System.Drawing.Size(170, 38)
+$script:UpdateButton.Anchor = 'Bottom,Left'
+$form.Controls.Add($script:UpdateButton)
+
 $script:ContinueButton = New-Object System.Windows.Forms.Button
 $script:ContinueButton.Text = 'Install missing dependencies and open installer'
-$script:ContinueButton.Location = New-Object System.Drawing.Point(290, 469)
-$script:ContinueButton.Size = New-Object System.Drawing.Size(350, 37)
+$script:ContinueButton.Location = New-Object System.Drawing.Point(310, 551)
+$script:ContinueButton.Size = New-Object System.Drawing.Size(330, 38)
 $script:ContinueButton.Anchor = 'Bottom,Right'
 $form.Controls.Add($script:ContinueButton)
 
 $cancel = New-Object System.Windows.Forms.Button
 $cancel.Text = 'Cancel'
-$cancel.Location = New-Object System.Drawing.Point(20, 469)
+$cancel.Location = New-Object System.Drawing.Point(20, 551)
 $cancel.Size = New-Object System.Drawing.Size(105, 37)
 $cancel.Anchor = 'Bottom,Left'
 $cancel.Add_Click({ $form.Close() })
 $form.Controls.Add($cancel)
+
+function Ensure-PythonAndGit {
+    if (-not $script:Python) {
+        if (Install-UsingWinget 'Python.Python.3.13') { Refresh-Status }
+        if (-not $script:Python) {
+            Log-Message 'Using the official Python.org installer as a fallback.'
+            Install-PythonFallback
+            Refresh-Status
+        }
+        if (-not $script:Python) { throw 'Python was installed but cannot be found with Tkinter. Restart Windows and retry.' }
+        Log-Message "Python ready: $script:Python"
+    }
+    if (-not $script:Git) {
+        if (Install-UsingWinget 'Git.Git') { Refresh-Status }
+        if (-not $script:Git) {
+            Log-Message 'Using the official signed Git for Windows installer as a fallback.'
+            Install-GitFallback
+            Refresh-Status
+        }
+        if (-not $script:Git) { throw 'Git was installed but cannot be found. Restart Windows and retry.' }
+        Log-Message "Git ready: $script:Git"
+    }
+    $env:Path = "$(Split-Path -Parent $script:Git);$env:Path"
+}
+
+function Save-PrintExpSelection([string]$SelectedFolder) {
+    $parent = Split-Path -Parent $script:SelectionFile
+    if (-not (Test-Path -LiteralPath $parent)) { [void](New-Item -ItemType Directory -Path $parent -Force) }
+    [IO.File]::WriteAllText($script:SelectionFile, $SelectedFolder, [Text.Encoding]::UTF8)
+}
+
+function Test-UpdateNeedsAdmin([string]$InstallFolder) {
+    $managedFolder = Join-Path $InstallFolder 'UV3DAddOn'
+    $probe = Join-Path $managedFolder ('.uv3d-write-probe-' + [Guid]::NewGuid().ToString('N'))
+    $file = $null
+    try {
+        $file = [IO.File]::Open($probe, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        return $false
+    } catch [System.UnauthorizedAccessException] {
+        return $true
+    } catch [System.IO.IOException] {
+        if ($_.Exception.HResult -eq -2147024891) { return $true }
+        throw
+    } finally {
+        if ($file) { $file.Dispose(); [IO.File]::Delete($probe) }
+    }
+}
+
+function Invoke-UpdateFromMain {
+    $folder = $script:PrintExpPath.Text.Trim()
+    if (-not $folder -or -not (Test-Path -LiteralPath (Join-Path $folder 'PrintExp_X64.exe'))) {
+        throw 'Select the folder containing PrintExp_X64.exe before updating.'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $folder 'UV3DAddOn\.uv3d-managed-install.json'))) {
+        throw 'The 3D add-on is not installed yet. Use Open Installer and Install first.'
+    }
+    if ([System.Windows.Forms.MessageBox]::Show(
+        'Update the installed 3D add-on from the latest main branch? Close PrintExp first. Original PrintExp files remain unchanged.',
+        'Update from main', [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question) -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+    Save-PrintExpSelection $folder
+    Ensure-PythonAndGit
+    $scriptPath = Join-Path $script:Root 'update_addon.py'
+    if (-not (Test-Path -LiteralPath $scriptPath)) { throw 'Missing update_addon.py. Download the latest installer.' }
+    $logPath = Join-Path $env:TEMP ('uv3d-update-' + [Guid]::NewGuid().ToString('N') + '.log')
+    $arguments = ('"' + $scriptPath + '" --target "' + $folder + '" --log-file "' + $logPath + '"')
+    $options = @{ FilePath=$script:Python; ArgumentList=$arguments; WorkingDirectory=$script:Root; PassThru=$true }
+    if (Test-UpdateNeedsAdmin $folder) {
+        Log-Message 'Windows administrator permission is needed for the PrintExp folder.'
+        $options['Verb'] = 'RunAs'
+    }
+    Log-Message 'Updating installed add-on from origin/main...'
+    $process = Start-Process @options
+    while (-not $process.HasExited) {
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 300
+        $process.Refresh()
+    }
+    if (Test-Path -LiteralPath $logPath) {
+        foreach ($line in (Get-Content -LiteralPath $logPath -ErrorAction SilentlyContinue)) { Log-Message $line }
+        Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
+    }
+    if ($process.ExitCode -ne 0) { throw "Update failed (code $($process.ExitCode)). See log above." }
+    Log-Message 'Update complete. Original PrintExp files remain unchanged.'
+}
 
 function Update-Display {
     $prebuilt = Prebuilt-NativeFilesExist
@@ -321,63 +459,65 @@ function Update-Display {
     }
 }
 
+
+# Restore the folder last selected in either window.
+if (Test-Path -LiteralPath $script:SelectionFile) {
+    try { $script:PrintExpPath.Text = [IO.File]::ReadAllText($script:SelectionFile, [Text.Encoding]::UTF8).Trim() } catch { }
+}
 Update-Display
-Log-Message 'This step only installs development tools. Your existing PrintExp files are not changed.'
+Log-Message 'Update from main is available here. Install/Uninstall are in the next window.'
+
+$script:UpdateButton.Add_Click({
+    $script:UpdateButton.Enabled = $false
+    $script:ContinueButton.Enabled = $false
+    try { Invoke-UpdateFromMain }
+    catch {
+        Log-Message "ERROR: $($_.Exception.Message)"
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'PrintExp update',
+            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    } finally {
+        $script:UpdateButton.Enabled = $true
+        $script:ContinueButton.Enabled = $true
+        Refresh-Status
+        Update-Display
+    }
+})
+
 $script:ContinueButton.Add_Click({
     $script:ContinueButton.Enabled = $false
+    $script:UpdateButton.Enabled = $false
     $script:BuildToolsCheckbox.Enabled = $false
     $script:BuildToolsPath.Enabled = $false
     try {
-        if (-not $script:Python) {
-            if (Install-UsingWinget 'Python.Python.3.13') {
-                Refresh-Status
-            }
-            if (-not $script:Python) {
-                Log-Message 'Using the official Python.org installer as a fallback.'
-                Install-PythonFallback
-                Refresh-Status
-            }
-            if (-not $script:Python) { throw 'Python was installed but cannot be found with Tkinter. Restart Windows and retry.' }
-            Log-Message "Python ready: $script:Python"
-        }
-        if (-not $script:Git) {
-            if (Install-UsingWinget 'Git.Git') {
-                Refresh-Status
-            }
-            if (-not $script:Git) {
-                Log-Message 'Using the official signed Git for Windows installer as a fallback.'
-                Install-GitFallback
-                Refresh-Status
-            }
-            if (-not $script:Git) { throw 'Git was installed but cannot be found. Restart Windows and retry.' }
-            Log-Message "Git ready: $script:Git"
-        }
-        # Git and Python are mandatory. MSVC is needed only if prebuilt x64 outputs are missing.
+        Ensure-PythonAndGit
         if (-not $script:Compiler -and -not (Prebuilt-NativeFilesExist)) {
             if ($script:BuildToolsCheckbox.Checked) {
                 Install-Compiler
                 Refresh-Status
                 if (-not $script:Compiler) {
-                    throw 'C++ Build Tools installation finished, but the compiler is not detected. Restart Windows and retry.'
+                    throw 'C++ Build Tools installed but compiler not detected. Restart Windows and retry.'
                 }
                 Log-Message 'Microsoft C++ compiler ready.'
             } else {
-                throw 'Native 3D page binaries are not included yet. Enable C++ Build Tools to compile them locally.'
+                throw 'Native 3D page binaries are not included. Enable C++ Build Tools or use prebuilt binaries.'
             }
         }
-        # Ensure the Git discovered on non-standard paths is visible to the child Python process.
-        $env:Path = "$(Split-Path -Parent $script:Git);$env:Path"
+        $selected = $script:PrintExpPath.Text.Trim()
+        if ($selected -and (Test-Path -LiteralPath (Join-Path $selected 'PrintExp_X64.exe'))) {
+            Save-PrintExpSelection $selected
+        }
         Log-Message 'Dependencies ready. Opening the graphical PrintExp add-on installer...'
         $form.Hide()
-        & $script:Python (Join-Path $script:Root 'installer.py')
+        & $script:Python (Join-Path $script:Root 'installer.py') --target $selected
         if ($LASTEXITCODE -ne 0) { throw "The installer exited with code $LASTEXITCODE." }
         $form.Close()
     } catch {
         $form.Show()
         Log-Message "ERROR: $($_.Exception.Message)"
-        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message,'PrintExp dependency setup',
-            [System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'PrintExp dependency setup',
+            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         $script:ContinueButton.Enabled = $true
+        $script:UpdateButton.Enabled = $true
         Refresh-Status
         Update-Display
     }

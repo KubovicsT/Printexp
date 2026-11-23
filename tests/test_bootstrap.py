@@ -27,6 +27,17 @@ class BootstrapContractTests(unittest.TestCase):
         self.assertIn("https://www.python.org/ftp/python/3.13.14/", text)
         self.assertIn("https://aka.ms/vs/17/release/vs_BuildTools.exe", text)
 
+    def test_first_window_update_and_remembered_folder(self):
+        bootstrap = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
+        manager = (ROOT / "installer.py").read_text(encoding="utf-8")
+        for text in ("Update from main", "Invoke-UpdateFromMain", "update_addon.py",
+                     "Save-PrintExpSelection", "selected-install.txt",
+                     "Add_Leave", "Add_FormClosing"):
+            self.assertIn(text, bootstrap)
+        self.assertNotIn('text="Update from main"', manager)
+        self.assertIn("remembered_selection()", manager)
+        self.assertIn("WM_DELETE_WINDOW", manager)
+
     def test_native_build_can_find_custom_compiler_path(self):
         script = (ROOT / "Build-Native.cmd").read_text(encoding="utf-8")
         self.assertIn("vswhere.exe", script)
