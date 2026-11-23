@@ -22,6 +22,8 @@ static void* g_frame = nullptr;
 static void* g_nativeWnd = nullptr;
 static int g_nativeIndex = -1;
 static int g_attempts = 0;
+static size_t g_previousCount = 0;
+static int g_stableCountTicks = 0;
 static bool g_ready = false;
 static bool g_usesOwnMfcWnd = false;
 static bool g_lastActive = false;
@@ -316,27 +318,31 @@ static bool TryNativePageRegistration() {
     void* frame = FindMainFrame(g_host);
     if (!frame) return false;
     size_t count = 0;
-    int visionEnabled = 0;
-    void* visionWnd = static_cast<unsigned char*>(frame)+0xf7168;
-    if (!SafeFrameState(frame,image,&visionEnabled,&count)) return false;
-    if (!visionEnabled) {
-        if (g_attempts==1 || g_attempts==12) Log(L"Waiting for PrintExp to register Vision first...");
+    // Only the core page list is required. Vision may not be registered
+    // when there is no printer or camera connected.
+    if (!SafePageCount(frame,image,&count)) return false;
+    if (count<3 || count>24) {
+        if (g_attempts==1 || g_attempts==12)
+            Log(L"Waiting for PrintExp core navigation initialization...");
         return false;
     }
-    if (count<6 || count>24) {
-        Log(L"Native page vector count outside expected range; aborting");
+    // Avoid registering in the middle of PrintExp's normal startup sequence.
+    if (count != g_previousCount) {
+        g_previousCount=count;
+        g_stableCountTicks=0;
         return false;
     }
-    // Prefer a dedicated MFC CWnd wrapper for the 3D content. If this MFC
-    // runtime doesn't export constructor/Attach, reuse the already initialized
-    // Vision page *object* only as an experimental registration placeholder.
+    if (++g_stableCountTicks < 4) return false;
+
+    // NEVER use Vision's CWnd as our page: it may be absent or uninitialized
+    // on the offline development PC, and is not owned by the 3D extension.
     void* nativePage = BuildOwnMfcWrapper(g_page);
     if (!nativePage) {
-        nativePage = visionWnd;
-        Log(L"Using stable built-in Vision CWnd as native registration placeholder");
-    } else {
-        g_usesOwnMfcWnd = true;
+        if (g_attempts==5 || g_attempts==20)
+            Log(L"Native 3D page waiting: independent MFC CWnd wrapper unavailable");
+        return false;
     }
+    g_usesOwnMfcWnd = true;
     if (!PerformNativeRegistration(image,frame,count,nativePage)) {
         Log(L"ERROR: Native AddPage call did not complete");
         return false;
@@ -414,13 +420,14 @@ static bool SetupNative3D(HWND host) {
         WS_CHILD|WS_CLIPSIBLINGS|WS_CLIPCHILDREN,
         0,76,800,600,host,nullptr,g_module,nullptr);
     if (!g_page) {
+        Log(L"ERROR: Could not create 3D workspace HWND, Win32="+std::to_wstring(GetLastError()));
         RemoveWindowSubclass(host,HostSubclass,kSubclass);
         g_host=nullptr;
         return false;
     }
     // Unlike earlier experiments, no independently painted 3D tab is created.
     // Its navigation entry must come from PrintExp's own AddPage method.
-    Log(L"Host attached. Waiting for native Vision/page initialization.");
+    Log(L"Host attached. Waiting for stable core page initialization (no Vision dependency).");
     SetTimer(host,kTimer,550,nullptr);
     TryNativePageRegistration();
     return true;
