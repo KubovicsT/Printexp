@@ -8,6 +8,8 @@
 #include <commctrl.h>
 #include <string>
 #include <vector>
+#include <cwchar>
+#include <cstdlib>
 
 #pragma comment(lib, "User32.lib")
 #pragma comment(lib, "Gdi32.lib")
@@ -19,7 +21,17 @@ static HWND g_tab = nullptr;
 static HWND g_page = nullptr;
 static bool g_active = false;
 static int g_tabTop = 54;
+static int g_tabLeft = -1;
+static int g_fallbackTabX = 470;
 static int g_contentTop = 111;
+static bool g_dragging = false;
+static bool g_dragged = false;
+static bool g_positionCustomized = false;
+static bool g_visionAnchorReported = false;
+static POINT g_dragStart = {};
+static int g_dragStartLeft = 0;
+static int g_dragStartTop = 0;
+static constexpr UINT_PTR kRepositionTimer = 0x3D21;
 static constexpr UINT_PTR kSubclassId = 0x3D2026;
 static const wchar_t* kTabClass = L"UV3D_PrintExp_Tab_Stage1";
 static const wchar_t* kPageClass = L"UV3D_PrintExp_Page_Stage1";
@@ -82,13 +94,96 @@ static void RectPaint(HDC dc, RECT r, COLORREF fill) {
 
 static void Position();
 
+static void SaveTabLocation() {
+    const std::wstring root = AddonRoot();
+    if (root.empty()) return;
+    const std::wstring path = root + L"\\config\\local-stage1.ini";
+    const std::wstring x = std::to_wstring(g_tabLeft);
+    const std::wstring y = std::to_wstring(g_tabTop);
+    if (!WritePrivateProfileStringW(L"Stage1", L"tab_x", x.c_str(), path.c_str()) ||
+        !WritePrivateProfileStringW(L"Stage1", L"tab_y", y.c_str(), path.c_str())) {
+        StageLog(L"WARNING: Could not save 3D tab coordinates, Win32=" +
+                 std::to_wstring(GetLastError()));
+    } else {
+        StageLog(L"Saved 3D tab position: x=" + x + L", y=" + y);
+    }
+}
+
+struct VisionAnchor { HWND host; bool found; int right; int top; int score; };
+static BOOL CALLBACK FindVisionControl(HWND child, LPARAM param) {
+    auto* anchor = reinterpret_cast<VisionAnchor*>(param);
+    if (!IsWindowVisible(child)) return TRUE;
+    wchar_t label[160] = {};
+    GetWindowTextW(child, label, 160);
+    if (!wcsstr(label, L"Vision") &&
+        !wcsstr(label, L"VISION") &&
+        !wcsstr(label, L"vision")) return TRUE;
+    RECT bounds = {};
+    if (!GetWindowRect(child, &bounds)) return TRUE;
+    POINT point = {bounds.left, bounds.top};
+    if (!ScreenToClient(anchor->host, &point)) return TRUE;
+    const int width = bounds.right - bounds.left;
+    const int height = bounds.bottom - bounds.top;
+    if (point.x < 0 || point.y < 0 || point.y > 140 ||
+        width < 25 || width > 260 || height < 20 || height > 100) return TRUE;
+    const int score = point.y * 1000 + width;
+    if (!anchor->found || score < anchor->score) {
+        anchor->found = true;
+        anchor->right = point.x + width;
+        anchor->top = point.y;
+        anchor->score = score;
+    }
+    return TRUE;
+}
+
 static LRESULT CALLBACK TabProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch(msg) {
         case WM_SETCURSOR: SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE;
+        case WM_LBUTTONDOWN:
+            g_dragging = true;
+            g_dragged = false;
+            GetCursorPos(&g_dragStart);
+            g_dragStartLeft = g_tabLeft >= 0 ? g_tabLeft : g_fallbackTabX;
+            g_dragStartTop = g_tabTop;
+            SetCapture(hwnd);
+            return 0;
+        case WM_MOUSEMOVE:
+            if (g_dragging && GetCapture() == hwnd) {
+                POINT current = {};
+                GetCursorPos(&current);
+                const int dx = current.x - g_dragStart.x;
+                const int dy = current.y - g_dragStart.y;
+                if (std::abs(dx) >= 5 || std::abs(dy) >= 5) g_dragged = true;
+                if (g_dragged) {
+                    RECT hostRect = {};
+                    GetClientRect(g_host, &hostRect);
+                    const int maxX = hostRect.right > 108 ? hostRect.right - 108 : 0;
+                    g_tabLeft = g_dragStartLeft + dx;
+                    if (g_tabLeft < 0) g_tabLeft = 0;
+                    if (g_tabLeft > maxX) g_tabLeft = maxX;
+                    g_tabTop = g_dragStartTop + dy;
+                    if (g_tabTop < 0) g_tabTop = 0;
+                    if (g_tabTop > 160) g_tabTop = 160;
+                    g_positionCustomized = true;
+                    Position();
+                }
+            }
+            return 0;
         case WM_LBUTTONUP:
+            if (g_dragging) {
+                const bool wasDragged = g_dragged;
+                g_dragging = false;
+                g_dragged = false;
+                if (GetCapture() == hwnd) ReleaseCapture();
+                if (wasDragged) {
+                    SaveTabLocation();
+                    return 0;
+                }
+            }
             if (g_page) {
                 g_active = !g_active;
-                StageLog(g_active ? L"3D tab clicked: showing page" : L"3D tab clicked: hiding page");
+                StageLog(g_active ? L"3D tab clicked: showing page" :
+                                    L"3D tab clicked: hiding page");
                 ShowWindow(g_page, g_active ? SW_SHOWNOACTIVATE : SW_HIDE);
                 Position();
                 InvalidateRect(hwnd, nullptr, TRUE);
@@ -168,13 +263,29 @@ static void Position() {
     ClientToScreen(g_host, &origin);
     const int width = rect.right - rect.left;
     const int height = rect.bottom - rect.top;
+    if (!g_positionCustomized && !g_dragging) {
+        VisionAnchor vision = {g_host, false, 0, 0, 0};
+        EnumChildWindows(g_host, FindVisionControl,
+                         reinterpret_cast<LPARAM>(&vision));
+        if (vision.found) {
+            g_tabLeft = vision.right + 9;
+            g_tabTop = vision.top;
+            if (!g_visionAnchorReported) {
+                StageLog(L"Found Vision control; anchored 3D next to it at x=" +
+                    std::to_wstring(g_tabLeft) + L", y=" + std::to_wstring(g_tabTop));
+                g_visionAnchorReported = true;
+            }
+        }
+    }
     if (!IsWindowVisible(g_tab)) ShowWindow(g_tab, SW_SHOWNOACTIVATE);
     SetWindowPos(g_page, HWND_TOP, origin.x, origin.y + g_contentTop,
         width > 0 ? width : 1,
         height > g_contentTop ? height - g_contentTop : 1,
         SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     if (g_active) ShowWindow(g_page, SW_SHOWNOACTIVATE);
-    SetWindowPos(g_tab, HWND_TOP, origin.x + (width > 126 ? width-126 : 0),
+    const int desiredX = g_tabLeft >= 0 ? g_tabLeft : g_fallbackTabX;
+    const int x = desiredX > width - 108 ? (width > 108 ? width - 108 : 0) : desiredX;
+    SetWindowPos(g_tab, HWND_TOP, origin.x + (x > 0 ? x : 0),
         origin.y + g_tabTop, 108, 38, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 }
 
@@ -182,11 +293,16 @@ static LRESULT CALLBACK HostSubclass(HWND hwnd, UINT message, WPARAM wp, LPARAM 
                                      UINT_PTR id, DWORD_PTR ref) {
     if (message == WM_NCDESTROY) {
         StageLog(L"Host main window closed; removing UI overlay");
+        KillTimer(hwnd, kRepositionTimer);
         if (g_page && IsWindow(g_page)) DestroyWindow(g_page);
         if (g_tab && IsWindow(g_tab)) DestroyWindow(g_tab);
         RemoveWindowSubclass(hwnd, HostSubclass, id);
         g_host = nullptr; g_tab = nullptr; g_page = nullptr; g_active = false;
         return DefSubclassProc(hwnd, message, wp, lp);
+    }
+    if (message == WM_TIMER && wp == kRepositionTimer) {
+        Position(); // Vision can appear after PrintExp startup.
+        return 0;
     }
     LRESULT value = DefSubclassProc(hwnd, message, wp, lp);
     if (message == WM_SIZE || message == WM_MOVE ||
@@ -212,6 +328,9 @@ static bool Create3DPage(HWND host) {
     const std::wstring ini = ConfigFile();
     if (!ini.empty()) {
         g_tabTop = GetPrivateProfileIntW(L"Stage1", L"tab_y", 54, ini.c_str());
+        g_tabLeft = GetPrivateProfileIntW(L"Stage1", L"tab_x", -1, ini.c_str());
+        g_positionCustomized = g_tabLeft >= 0;
+        g_fallbackTabX = GetPrivateProfileIntW(L"Stage1", L"fallback_tab_x", 470, ini.c_str());
         g_contentTop = GetPrivateProfileIntW(L"Stage1", L"page_y", 111, ini.c_str());
     }
     WNDCLASSW cls = {};
@@ -250,6 +369,7 @@ static bool Create3DPage(HWND host) {
         g_host = nullptr; g_tab = nullptr; g_page = nullptr;
         return false;
     }
+    SetTimer(g_host, kRepositionTimer, 600, nullptr);
     Position();
     StageLog(L"SUCCESS: UI overlay created on host HWND=" +
         std::to_wstring(reinterpret_cast<UINT_PTR>(host)) +
