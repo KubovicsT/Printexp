@@ -124,6 +124,45 @@ function Test-ExistingDirectory([AllowEmptyString()][string]$Path) {
     }
 }
 
+function Test-VC2010X64Runtime([string]$InstallFolder) {
+    # PrintExp_X64.exe is a 64-bit VC++ 2010 MFC application and imports
+    # mfc100u.dll, NOT the mfc100.dll bundled in the vendor folder.
+    $locations = @((Join-Path $env:WINDIR 'System32\mfc100u.dll'))
+    if (-not [string]::IsNullOrWhiteSpace($InstallFolder)) {
+        $locations += (Join-Path $InstallFolder 'mfc100u.dll')
+    }
+    foreach ($path in $locations) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) { return $true }
+    }
+    return $false
+}
+
+function Ensure-VC2010X64Runtime([string]$InstallFolder) {
+    if (Test-VC2010X64Runtime $InstallFolder) {
+        Log-Message 'Visual C++ 2010 x64 MFC runtime already present.'
+        return
+    }
+    Log-Message 'PrintExp requires the missing Visual C++ 2010 SP1 x64 MFC runtime (mfc100u.dll).'
+    # Prefer Microsoft-maintained WinGet package manifests. Do not use
+    # unverified third-party single DLL download sites.
+    $script:Winget = Resolve-Winget
+    if ($script:Winget) {
+        $null = Install-UsingWinget 'Microsoft.VCRedist.2010.x64'
+    }
+    if (-not (Test-VC2010X64Runtime $InstallFolder)) {
+        $download = Join-Path $env:TEMP 'PrintExp3D-vcredist2010_x64.exe'
+        # Microsoft Learn: "Visual Studio 2010 (VC++ 10.0) SP1", x64.
+        $official = 'https://download.microsoft.com/download/1/6/5/165255E7-1014-4D0A-B094-B6A430A6BFFC/vcredist_x64.exe'
+        Download-Official $official $download
+        Confirm-Authenticode $download 'Microsoft Corporation'
+        [void](Invoke-CheckedProcess -File $download -ProcessArguments @('/q','/norestart') -Name 'Microsoft Visual C++ 2010 SP1 x64')
+    }
+    if (-not (Test-VC2010X64Runtime $InstallFolder)) {
+        throw 'The required 64-bit mfc100u.dll is still missing. Windows may need to restart after the Microsoft runtime installation.'
+    }
+    Log-Message 'Verified Visual C++ 2010 x64 MFC runtime after installation.'
+}
+
 function Prebuilt-NativeFilesExist {
     return (Test-Path -LiteralPath (Join-Path $script:Root 'dist\windows\PrintExp3DLauncher.exe')) -and
            (Test-Path -LiteralPath (Join-Path $script:Root 'dist\windows\UV3DPage.dll'))
@@ -238,6 +277,7 @@ if ($CheckOnly) {
     Write-Output "Python=$([bool]$script:Python)"
     Write-Output "Git=$([bool]$script:Git)"
     Write-Output "MSVC=$([bool]$script:Compiler)"
+    Write-Output "VC2010_x64=$([bool](Test-VC2010X64Runtime ''))"
     exit 0
 }
 
@@ -285,7 +325,7 @@ function Ensure-CompilerIfNeeded([string]$Action, [string]$InstallFolder) {
 
 function Run-ElevatedAction([string]$Action, [string]$InstallFolder) {
     if (-not (Test-Administrator)) { throw 'Administrator permission is required for Install, Update and Uninstall.' }
-    if ($Action -notin @('install','update','uninstall','offline-enable','offline-disable')) { throw 'Unsupported modification action.' }
+    if ($Action -notin @('install','update','uninstall','offline-enable','offline-disable','vc2010-install')) { throw 'Unsupported modification action.' }
     if (-not (Test-Path -LiteralPath (Join-Path $InstallFolder 'PrintExp_X64.exe'))) {
         throw 'Select the folder that contains PrintExp_X64.exe.'
     }
@@ -298,6 +338,12 @@ function Run-ElevatedAction([string]$Action, [string]$InstallFolder) {
     if ($Action -in @('offline-enable','offline-disable') -and
         -not (Test-Path -LiteralPath (Join-Path $InstallFolder 'UV3DAddOn\.uv3d-managed-install.json'))) {
         throw 'Install the add-on before enabling offline development mode.'
+    }
+    if ($Action -eq 'vc2010-install') {
+        # Installing a Microsoft system prerequisite requires UAC. This is
+        # explicitly approved by the user; vendor PrintExp files aren't edited.
+        Ensure-VC2010X64Runtime $InstallFolder
+        return
     }
     # Offline configuration and uninstall require Python only.
     Ensure-Python
@@ -488,7 +534,7 @@ function Finish-Modification {
     }
     $icon = if ($success) {'Information'} else {'Error'}
     [System.Windows.Forms.MessageBox]::Show($message, 'PrintExp 3D', 'OK', $icon) | Out-Null
-    if ($success -and $script:CurrentAction -eq 'offline-enable') {
+    if ($success -and $script:CurrentAction -in @('offline-enable','vc2010-install')) {
         try { Start-NativePrintExp $script:OperationFolder }
         catch {
             $script:StatusLabel.Text = $_.Exception.Message
@@ -584,6 +630,22 @@ function Read-ProjectMode([string]$InstallFolder) {
 }
 
 function Start-NativePrintExp([string]$InstallFolder) {
+    if (-not (Test-VC2010X64Runtime $InstallFolder)) {
+        $decision = [System.Windows.Forms.MessageBox]::Show(
+            "PrintExp_X64.exe requires Microsoft Visual C++ 2010 SP1 x64 (mfc100u.dll), which is missing." +
+            [Environment]::NewLine + [Environment]::NewLine +
+            "Download and install this free Microsoft runtime now?" +
+            [Environment]::NewLine +
+            "This system dependency is installed by Microsoft into Windows, outside the PrintExp folder." +
+            [Environment]::NewLine +
+            "Windows will request administrator approval.",
+            'PrintExp 3D: Required Microsoft Runtime', 'YesNo', 'Question')
+        if ($decision -ne [System.Windows.Forms.DialogResult]::Yes) {
+            throw 'Cannot start PrintExp until the required Visual C++ 2010 x64 runtime is installed.'
+        }
+        Begin-Modification 'vc2010-install'
+        return
+    }
     $native = Join-Path $InstallFolder 'UV3DAddOn\dist\windows\PrintExp3DLauncher.exe'
     $hostExe = Join-Path $InstallFolder 'PrintExp_X64.exe'
     if (-not (Test-Path -LiteralPath $native -PathType Leaf)) {
