@@ -534,6 +534,26 @@ function Finish-Modification {
     }
     $icon = if ($success) {'Information'} else {'Error'}
     [System.Windows.Forms.MessageBox]::Show($message, 'PrintExp 3D', 'OK', $icon) | Out-Null
+    # The UI bootstrap lives outside UV3DAddOn when started from an older
+    # ZIP. Install/Update has fetched the new manager as part of the add-on.
+    # Reopen that manager now so newly added controls appear immediately.
+    if ($success -and $script:CurrentAction -in @('install','update')) {
+        $latest = Join-Path $script:OperationFolder 'UV3DAddOn\Start-Installer.vbs'
+        if (Test-Path -LiteralPath $latest -PathType Leaf) {
+            $currentRoot = [IO.Path]::GetFullPath($script:Root).TrimEnd('\')
+            $latestRoot = [IO.Path]::GetFullPath((Split-Path -Parent $latest)).TrimEnd('\')
+            if (-not [string]::Equals($currentRoot,$latestRoot,[StringComparison]::OrdinalIgnoreCase)) {
+                try {
+                    $script:StatusLabel.Text = 'Opening the updated add-on manager...'
+                    Start-Process -FilePath 'wscript.exe' -ArgumentList ('"{0}"' -f $latest) -WorkingDirectory $latestRoot -ErrorAction Stop
+                    $form.Close()
+                    return
+                } catch {
+                    $script:StatusLabel.Text = 'The add-on updated, but the new manager could not open: ' + $_.Exception.Message
+                }
+            }
+        }
+    }
     if ($success -and $script:CurrentAction -in @('offline-enable','vc2010-install','simulate-enable','simulate-disable')) {
         try {
             if ($script:SimulationCheck -and $script:SimulationCheck.Checked) {
@@ -551,9 +571,12 @@ function Finish-Modification {
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'PrintExp 3D Add-on Manager'
-$form.Size = New-Object System.Drawing.Size(760,309)
-$form.MinimumSize = New-Object System.Drawing.Size(760,309)
-$form.MaximumSize = New-Object System.Drawing.Size(1200,390)
+# ClientSize is the usable area INSIDE the title bar, unlike Size. Give the
+# checkbox and multiline status enough room at Windows 125-200% scaling.
+$form.ClientSize = New-Object System.Drawing.Size(744,320)
+$form.MinimumSize = New-Object System.Drawing.Size(760,365)
+$form.MaximumSize = New-Object System.Drawing.Size(1200,510)
+$form.AutoScroll = $true
 $form.StartPosition = 'CenterScreen'
 $form.Font = New-Object System.Drawing.Font('Segoe UI',10)
 $form.BackColor = [System.Drawing.Color]::FromArgb(24,33,43)
@@ -787,16 +810,18 @@ $script:LaunchButton.Add_Click({
 
 $script:SimulationCheck = New-Object System.Windows.Forms.CheckBox
 $script:SimulationCheck.Text = 'Simulate machine connection (offline test)'
-$script:SimulationCheck.Location = New-Object System.Drawing.Point(20,187)
-$script:SimulationCheck.Size = New-Object System.Drawing.Size(530,28)
+$script:SimulationCheck.Location = New-Object System.Drawing.Point(20,191)
+$script:SimulationCheck.Size = New-Object System.Drawing.Size(620,35)
+$script:SimulationCheck.AutoSize = $false
 $script:SimulationCheck.ForeColor = [System.Drawing.Color]::FromArgb(255,220,150)
 $script:SimulationCheck.Checked = Test-SimulationProfile $script:FolderInput.Text
 $form.Controls.Add($script:SimulationCheck)
+$script:SimulationCheck.BringToFront()
 
 $script:StatusLabel = New-Object System.Windows.Forms.Label
 $script:StatusLabel.Text = 'Ready'
-$script:StatusLabel.Location = New-Object System.Drawing.Point(20,222)
-$script:StatusLabel.Size = New-Object System.Drawing.Size(715,54)
+$script:StatusLabel.Location = New-Object System.Drawing.Point(20,242)
+$script:StatusLabel.Size = New-Object System.Drawing.Size(700,55)
 $script:StatusLabel.Anchor = 'Top,Left,Right'
 $form.Controls.Add($script:StatusLabel)
 

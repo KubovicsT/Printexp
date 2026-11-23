@@ -14,6 +14,18 @@ class SingleWindowContractTests(unittest.TestCase):
         self.assertNotIn("installer.py", vbs)
         self.assertNotIn("installer.py", start)
 
+    def test_launcher_prefers_updated_manager_in_selected_installation(self):
+        vbs = (ROOT / "Start-Installer.vbs").read_text(encoding="utf-8")
+        ui = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
+        for expected in ("selected-install.txt", "UV3DAddOn", ".uv3d-managed-install.json",
+                         "Bootstrap-Installer.ps1", "PrintExp_X64.exe"):
+            self.assertIn(expected, vbs)
+        self.assertIn("Opening the updated add-on manager", ui)
+        self.assertIn("UV3DAddOn\\Start-Installer.vbs", ui)
+        self.assertIn("$form.ClientSize", ui)
+        self.assertIn("$form.AutoScroll = $true", ui)
+        self.assertIn("$script:SimulationCheck.BringToFront()", ui)
+
     def test_exactly_four_primary_actions_and_no_extra_gui(self):
         text = (ROOT / "Bootstrap-Installer.ps1").read_text()
         self.assertIn("Install Add-on", text)
