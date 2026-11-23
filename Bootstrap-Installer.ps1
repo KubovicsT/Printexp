@@ -325,7 +325,7 @@ function Ensure-CompilerIfNeeded([string]$Action, [string]$InstallFolder) {
 
 function Run-ElevatedAction([string]$Action, [string]$InstallFolder) {
     if (-not (Test-Administrator)) { throw 'Administrator permission is required for Install, Update and Uninstall.' }
-    if ($Action -notin @('install','update','uninstall','offline-enable','offline-disable','vc2010-install')) { throw 'Unsupported modification action.' }
+    if ($Action -notin @('install','update','uninstall','offline-enable','offline-disable','vc2010-install','simulate-enable','simulate-disable')) { throw 'Unsupported modification action.' }
     if (-not (Test-Path -LiteralPath (Join-Path $InstallFolder 'PrintExp_X64.exe'))) {
         throw 'Select the folder that contains PrintExp_X64.exe.'
     }
@@ -335,7 +335,7 @@ function Run-ElevatedAction([string]$Action, [string]$InstallFolder) {
     if ($Action -eq 'update' -and -not (Test-Path -LiteralPath (Join-Path $InstallFolder 'UV3DAddOn\.uv3d-managed-install.json'))) {
         throw 'No managed add-on is installed. Use Install Add-on first.'
     }
-    if ($Action -in @('offline-enable','offline-disable') -and
+    if ($Action -in @('offline-enable','offline-disable','simulate-enable','simulate-disable') -and
         -not (Test-Path -LiteralPath (Join-Path $InstallFolder 'UV3DAddOn\.uv3d-managed-install.json'))) {
         throw 'Install the add-on before enabling offline development mode.'
     }
@@ -423,7 +423,7 @@ function Get-SelectedFolder {
 }
 
 function Set-Busy([bool]$Busy) {
-    foreach ($button in @($script:InstallButton,$script:UpdateButton,$script:UninstallButton,$script:LaunchButton,$script:BrowseButton)) {
+    foreach ($button in @($script:InstallButton,$script:UpdateButton,$script:UninstallButton,$script:LaunchButton,$script:BrowseButton,$script:SimulationCheck)) {
         $button.Enabled = -not $Busy
     }
     $script:FolderInput.ReadOnly = $Busy
@@ -534,8 +534,14 @@ function Finish-Modification {
     }
     $icon = if ($success) {'Information'} else {'Error'}
     [System.Windows.Forms.MessageBox]::Show($message, 'PrintExp 3D', 'OK', $icon) | Out-Null
-    if ($success -and $script:CurrentAction -in @('offline-enable','vc2010-install')) {
-        try { Start-NativePrintExp $script:OperationFolder }
+    if ($success -and $script:CurrentAction -in @('offline-enable','vc2010-install','simulate-enable','simulate-disable')) {
+        try {
+            if ($script:SimulationCheck -and $script:SimulationCheck.Checked) {
+                Start-SimulatedPrintExp $script:OperationFolder
+            } else {
+                Start-NativePrintExp $script:OperationFolder
+            }
+        }
         catch {
             $script:StatusLabel.Text = $_.Exception.Message
             [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'PrintExp 3D', 'OK', 'Error') | Out-Null
@@ -545,9 +551,9 @@ function Finish-Modification {
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'PrintExp 3D Add-on Manager'
-$form.Size = New-Object System.Drawing.Size(760,260)
-$form.MinimumSize = New-Object System.Drawing.Size(760,260)
-$form.MaximumSize = New-Object System.Drawing.Size(1200,350)
+$form.Size = New-Object System.Drawing.Size(760,309)
+$form.MinimumSize = New-Object System.Drawing.Size(760,309)
+$form.MaximumSize = New-Object System.Drawing.Size(1200,390)
 $form.StartPosition = 'CenterScreen'
 $form.Font = New-Object System.Drawing.Font('Segoe UI',10)
 $form.BackColor = [System.Drawing.Color]::FromArgb(24,33,43)
@@ -588,9 +594,12 @@ $script:BrowseButton.Add_Click({
     if ($picker.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         $script:FolderInput.Text = $picker.SelectedPath
         Save-Selection $picker.SelectedPath
+        if ($script:SimulationCheck) {
+            $script:SimulationCheck.Checked = Test-SimulationProfile $picker.SelectedPath
+        }
     }
 })
-$script:FolderInput.Add_Leave({ Save-Selection $script:FolderInput.Text })
+$script:FolderInput.Add_Leave({ Save-Selection $script:FolderInput.Text; if ($script:SimulationCheck) { $script:SimulationCheck.Checked = Test-SimulationProfile $script:FolderInput.Text } })
 
 $script:InstallButton = New-Object System.Windows.Forms.Button
 $script:InstallButton.Text = 'Install Add-on'
@@ -627,6 +636,309 @@ function Read-ProjectMode([string]$InstallFolder) {
         '(?im)^[ \t]*PROJECT_MODE[ \t]*=[ \t]*([01])(?=$|[ \t;#])')
     if (-not $mode.Success) { throw 'Project.ini has no PROJECT_MODE=0/1 setting.' }
     return [int]$mode.Groups[1].Value
+}
+
+function Test-SimulationProfile([string]$InstallFolder) {
+    $config = Join-Path $InstallFolder 'Project.ini'
+    if (-not (Test-Path -LiteralPath $config -PathType Leaf)) { return $false }
+    try {
+        $data = [IO.File]::ReadAllText($config, [Text.Encoding]::Default)
+        return ($data -match '(?im)^[ \t]*PROJECT_MODE[ \t]*=[ \t]*1[ \t]*
+    if (-not (Test-VC2010X64Runtime $InstallFolder)) {
+        $decision = [System.Windows.Forms.MessageBox]::Show(
+            "PrintExp_X64.exe requires Microsoft Visual C++ 2010 SP1 x64 (mfc100u.dll), which is missing." +
+            [Environment]::NewLine + [Environment]::NewLine +
+            "Download and install this free Microsoft runtime now?" +
+            [Environment]::NewLine +
+            "This system dependency is installed by Microsoft into Windows, outside the PrintExp folder." +
+            [Environment]::NewLine +
+            "Windows will request administrator approval.",
+            'PrintExp 3D: Required Microsoft Runtime', 'YesNo', 'Question')
+        if ($decision -ne [System.Windows.Forms.DialogResult]::Yes) {
+            throw 'Cannot start PrintExp until the required Visual C++ 2010 x64 runtime is installed.'
+        }
+        Begin-Modification 'vc2010-install'
+        return
+    }
+    $native = Join-Path $InstallFolder 'UV3DAddOn\dist\windows\PrintExp3DLauncher.exe'
+    $hostExe = Join-Path $InstallFolder 'PrintExp_X64.exe'
+    if ($NoAddon) {
+        # Baseline check: the original vendor program without DLL injection.
+        # Hold Shift while clicking Launch PrintExp + 3D. This isolates
+        # missing dependencies / printer startup from our experimental hook.
+        Start-Process -FilePath $hostExe -WorkingDirectory $InstallFolder -ErrorAction Stop
+        $script:StatusLabel.Text = 'Launching original PrintExp without 3D (Shift+Launch baseline test).'
+        return
+    }
+    if (-not (Test-Path -LiteralPath $native -PathType Leaf)) {
+        throw 'The 3D launcher is missing; run Install Add-on or Update from main first.'
+    }
+    Start-Process -FilePath $native -ArgumentList ('"{0}"' -f $hostExe) -WorkingDirectory $InstallFolder -ErrorAction Stop
+    $mode = Read-ProjectMode $InstallFolder
+    $script:StatusLabel.Text = if ($mode -eq 1) {
+        'Starting PrintExp in offline development mode (printer commands disabled in 3D).'
+    } else {
+        'Starting PrintExp using the normal online configuration.'
+    }
+}
+
+$script:LaunchButton = New-Object System.Windows.Forms.Button
+$script:LaunchButton.Text = 'Launch PrintExp + 3D'
+$script:LaunchButton.Location = New-Object System.Drawing.Point(521,137)
+$script:LaunchButton.Size = New-Object System.Drawing.Size(215,39)
+$form.Controls.Add($script:LaunchButton)
+$script:LaunchButton.Add_Click({
+    try {
+        if ($script:WorkerProcess) { return }
+        $folder = Get-SelectedFolder
+        $launcher = Join-Path $folder 'Start PrintExp with 3D.cmd'
+        if (-not (Test-Path -LiteralPath $launcher)) { throw 'The 3D add-on is not installed. Click Install Add-on first.' }
+        if ($script:SimulationCheck.Checked) {
+            if (Test-SimulationProfile $folder) {
+                Start-SimulatedPrintExp $folder
+            } else {
+                Begin-Modification 'simulate-enable'
+            }
+            return
+        }
+        if (Test-SimulationProfile $folder) {
+            Begin-Modification 'simulate-disable'
+            return
+        }
+        $mode = Read-ProjectMode $folder
+        if ($mode -eq 0) {
+            $decision = [System.Windows.Forms.MessageBox]::Show(
+                'This PrintExp installation is configured for ONLINE operation.' +
+                [Environment]::NewLine + [Environment]::NewLine +
+                'Is this a development computer without the printer?' +
+                [Environment]::NewLine +
+                'YES: enable PrintExp debug mode (PROJECT_MODE=1) with a verified in-folder backup and UAC approval.' +
+                [Environment]::NewLine +
+                'NO: launch normally without changing settings.' +
+                [Environment]::NewLine +
+                'CANCEL: do not launch.',
+                'PrintExp 3D: Offline Development', 'YesNoCancel', 'Question')
+            if ($decision -eq [System.Windows.Forms.DialogResult]::Cancel) { return }
+            if ($decision -eq [System.Windows.Forms.DialogResult]::Yes) {
+                Begin-Modification 'offline-enable'
+                return
+            }
+        }
+        $baseline = (([System.Windows.Forms.Control]::ModifierKeys -band
+                      [System.Windows.Forms.Keys]::Shift) -ne 0)
+        Start-NativePrintExp $folder -NoAddon:$baseline
+    } catch {
+        $details = $_.Exception.Message
+        if ($_.Exception -is [System.ComponentModel.Win32Exception] -and $_.Exception.NativeErrorCode -eq 5) {
+            $details = 'Windows denied access to the add-on executable (error 5). This often means the previous installation retained the administrator temporary folder permissions. Use Update from main to repair the installed files. Original PrintExp files are unchanged.'
+        }
+        $script:StatusLabel.Text = $details
+        [System.Windows.Forms.MessageBox]::Show($details, 'PrintExp 3D', 'OK', 'Error') | Out-Null
+    }
+})
+
+$script:SimulationCheck = New-Object System.Windows.Forms.CheckBox
+$script:SimulationCheck.Text = 'Simulate machine connection (offline test)'
+$script:SimulationCheck.Location = New-Object System.Drawing.Point(20,187)
+$script:SimulationCheck.Size = New-Object System.Drawing.Size(530,28)
+$script:SimulationCheck.ForeColor = [System.Drawing.Color]::FromArgb(255,220,150)
+$script:SimulationCheck.Checked = Test-SimulationProfile $script:FolderInput.Text
+$form.Controls.Add($script:SimulationCheck)
+
+$script:StatusLabel = New-Object System.Windows.Forms.Label
+$script:StatusLabel.Text = 'Ready'
+$script:StatusLabel.Location = New-Object System.Drawing.Point(20,222)
+$script:StatusLabel.Size = New-Object System.Drawing.Size(715,54)
+$script:StatusLabel.Anchor = 'Top,Left,Right'
+$form.Controls.Add($script:StatusLabel)
+
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 400
+$timer.Add_Tick({
+    if (-not $script:WorkerProcess) { return }
+    $script:WorkerProcess.Refresh()
+    if ($script:WorkerProcess.HasExited) { Finish-Modification; return }
+    try {
+        if (Test-Path -LiteralPath $script:WorkerLog) {
+            $last = Get-Content -LiteralPath $script:WorkerLog -Tail 1 -ErrorAction Stop
+            if ($last) { $script:StatusLabel.Text = [string]$last }
+        }
+    } catch { }
+})
+$timer.Start()
+$form.Add_FormClosing({
+    if ($script:WorkerProcess -and -not $script:WorkerProcess.HasExited) {
+        $_.Cancel = $true
+        $script:StatusLabel.Text = 'An installation operation is running. Close the manager once it finishes.'
+        return
+    }
+    Save-Selection $script:FolderInput.Text
+})
+[void]$form.ShowDialog()
+ -and
+                ([regex]::Matches($data,'(?im)^[ \t]*ServerIP[ \t]*=[ \t]*127\.0\.0\.1[ \t]*
+    if (-not (Test-VC2010X64Runtime $InstallFolder)) {
+        $decision = [System.Windows.Forms.MessageBox]::Show(
+            "PrintExp_X64.exe requires Microsoft Visual C++ 2010 SP1 x64 (mfc100u.dll), which is missing." +
+            [Environment]::NewLine + [Environment]::NewLine +
+            "Download and install this free Microsoft runtime now?" +
+            [Environment]::NewLine +
+            "This system dependency is installed by Microsoft into Windows, outside the PrintExp folder." +
+            [Environment]::NewLine +
+            "Windows will request administrator approval.",
+            'PrintExp 3D: Required Microsoft Runtime', 'YesNo', 'Question')
+        if ($decision -ne [System.Windows.Forms.DialogResult]::Yes) {
+            throw 'Cannot start PrintExp until the required Visual C++ 2010 x64 runtime is installed.'
+        }
+        Begin-Modification 'vc2010-install'
+        return
+    }
+    $native = Join-Path $InstallFolder 'UV3DAddOn\dist\windows\PrintExp3DLauncher.exe'
+    $hostExe = Join-Path $InstallFolder 'PrintExp_X64.exe'
+    if ($NoAddon) {
+        # Baseline check: the original vendor program without DLL injection.
+        # Hold Shift while clicking Launch PrintExp + 3D. This isolates
+        # missing dependencies / printer startup from our experimental hook.
+        Start-Process -FilePath $hostExe -WorkingDirectory $InstallFolder -ErrorAction Stop
+        $script:StatusLabel.Text = 'Launching original PrintExp without 3D (Shift+Launch baseline test).'
+        return
+    }
+    if (-not (Test-Path -LiteralPath $native -PathType Leaf)) {
+        throw 'The 3D launcher is missing; run Install Add-on or Update from main first.'
+    }
+    Start-Process -FilePath $native -ArgumentList ('"{0}"' -f $hostExe) -WorkingDirectory $InstallFolder -ErrorAction Stop
+    $mode = Read-ProjectMode $InstallFolder
+    $script:StatusLabel.Text = if ($mode -eq 1) {
+        'Starting PrintExp in offline development mode (printer commands disabled in 3D).'
+    } else {
+        'Starting PrintExp using the normal online configuration.'
+    }
+}
+
+$script:LaunchButton = New-Object System.Windows.Forms.Button
+$script:LaunchButton.Text = 'Launch PrintExp + 3D'
+$script:LaunchButton.Location = New-Object System.Drawing.Point(521,137)
+$script:LaunchButton.Size = New-Object System.Drawing.Size(215,39)
+$form.Controls.Add($script:LaunchButton)
+$script:LaunchButton.Add_Click({
+    try {
+        if ($script:WorkerProcess) { return }
+        $folder = Get-SelectedFolder
+        $launcher = Join-Path $folder 'Start PrintExp with 3D.cmd'
+        if (-not (Test-Path -LiteralPath $launcher)) { throw 'The 3D add-on is not installed. Click Install Add-on first.' }
+        $mode = Read-ProjectMode $folder
+        if ($mode -eq 0) {
+            $decision = [System.Windows.Forms.MessageBox]::Show(
+                'This PrintExp installation is configured for ONLINE operation.' +
+                [Environment]::NewLine + [Environment]::NewLine +
+                'Is this a development computer without the printer?' +
+                [Environment]::NewLine +
+                'YES: enable PrintExp debug mode (PROJECT_MODE=1) with a verified in-folder backup and UAC approval.' +
+                [Environment]::NewLine +
+                'NO: launch normally without changing settings.' +
+                [Environment]::NewLine +
+                'CANCEL: do not launch.',
+                'PrintExp 3D: Offline Development', 'YesNoCancel', 'Question')
+            if ($decision -eq [System.Windows.Forms.DialogResult]::Cancel) { return }
+            if ($decision -eq [System.Windows.Forms.DialogResult]::Yes) {
+                Begin-Modification 'offline-enable'
+                return
+            }
+        }
+        $baseline = (([System.Windows.Forms.Control]::ModifierKeys -band
+                      [System.Windows.Forms.Keys]::Shift) -ne 0)
+        Start-NativePrintExp $folder -NoAddon:$baseline
+    } catch {
+        $details = $_.Exception.Message
+        if ($_.Exception -is [System.ComponentModel.Win32Exception] -and $_.Exception.NativeErrorCode -eq 5) {
+            $details = 'Windows denied access to the add-on executable (error 5). This often means the previous installation retained the administrator temporary folder permissions. Use Update from main to repair the installed files. Original PrintExp files are unchanged.'
+        }
+        $script:StatusLabel.Text = $details
+        [System.Windows.Forms.MessageBox]::Show($details, 'PrintExp 3D', 'OK', 'Error') | Out-Null
+    }
+})
+
+$script:StatusLabel = New-Object System.Windows.Forms.Label
+$script:StatusLabel.Text = 'Ready'
+$script:StatusLabel.Location = New-Object System.Drawing.Point(20,191)
+$script:StatusLabel.Size = New-Object System.Drawing.Size(715,34)
+$script:StatusLabel.Anchor = 'Top,Left,Right'
+$form.Controls.Add($script:StatusLabel)
+
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 400
+$timer.Add_Tick({
+    if (-not $script:WorkerProcess) { return }
+    $script:WorkerProcess.Refresh()
+    if ($script:WorkerProcess.HasExited) { Finish-Modification; return }
+    try {
+        if (Test-Path -LiteralPath $script:WorkerLog) {
+            $last = Get-Content -LiteralPath $script:WorkerLog -Tail 1 -ErrorAction Stop
+            if ($last) { $script:StatusLabel.Text = [string]$last }
+        }
+    } catch { }
+})
+$timer.Start()
+$form.Add_FormClosing({
+    if ($script:WorkerProcess -and -not $script:WorkerProcess.HasExited) {
+        $_.Cancel = $true
+        $script:StatusLabel.Text = 'An installation operation is running. Close the manager once it finishes.'
+        return
+    }
+    Save-Selection $script:FolderInput.Text
+})
+[void]$form.ShowDialog()
+)).Count -ge 2)
+    } catch { return $false }
+}
+
+function Start-SimulatedPrintExp([string]$InstallFolder) {
+    if (-not (Test-SimulationProfile $InstallFolder)) {
+        throw 'Simulation is selected, but the controller configuration has not been redirected. Approve the UAC simulation setup first.'
+    }
+    if (-not (Test-VC2010X64Runtime $InstallFolder)) {
+        $decision = [System.Windows.Forms.MessageBox]::Show(
+            'PrintExp requires Microsoft Visual C++ 2010 SP1 x64. Install this free Microsoft dependency first?',
+            'Required Microsoft Runtime', 'YesNo', 'Question')
+        if ($decision -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+        Begin-Modification 'vc2010-install'
+        return
+    }
+    Refresh-Status
+    if (-not $script:Python) {
+        throw 'Python is required for the local virtual controller. Run Update from main to install dependencies.'
+    }
+    $virtual = Join-Path $InstallFolder 'UV3DAddOn\simulated_controller.py'
+    $launcher = Join-Path $InstallFolder 'UV3DAddOn\dist\windows\PrintExp3DLauncher.exe'
+    $hostExe = Join-Path $InstallFolder 'PrintExp_X64.exe'
+    $logs = Join-Path $InstallFolder 'UV3DAddOn\diagnostics\simulated-controller.ndjson'
+    foreach ($required in @($virtual,$launcher,$hostExe)) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+            throw "Required simulation file missing: $required. Update from main first."
+        }
+    }
+    $logDir = Split-Path -Parent $logs
+    $needsElevation = $false
+    try {
+        [IO.Directory]::CreateDirectory($logDir) | Out-Null
+        $probe = Join-Path $logDir ('.uv3d-permission-check-' + [guid]::NewGuid().ToString('N'))
+        [IO.File]::WriteAllText($probe, '')
+        [IO.File]::Delete($probe)
+    } catch [System.UnauthorizedAccessException] {
+        $needsElevation = $true
+    } catch [System.IO.IOException] {
+        $needsElevation = $true
+    }
+    $args = ('"{0}" --log "{1}" --launcher "{2}" --host "{3}"' -f
+             $virtual,$logs,$launcher,$hostExe)
+    if ($needsElevation) {
+        # Only this test-install session is elevated when Program Files
+        # prevents writing the diagnostics folder.
+        Start-Process -FilePath $script:Python -ArgumentList $args -Verb RunAs -WindowStyle Hidden -ErrorAction Stop
+    } else {
+        Start-Process -FilePath $script:Python -ArgumentList $args -WorkingDirectory $InstallFolder -WindowStyle Hidden -ErrorAction Stop
+    }
+    $script:StatusLabel.Text = 'Virtual controller started on 127.0.0.1:5001 (TCP/UDP); handshake not yet verified.'
 }
 
 function Start-NativePrintExp([string]$InstallFolder, [switch]$NoAddon) {
