@@ -25,6 +25,7 @@ static int g_attempts = 0;
 static size_t g_previousCount = 0;
 static int g_stableCountTicks = 0;
 static bool g_ready = false;
+static bool g_registrationAborted = false;
 static bool g_usesOwnMfcWnd = false;
 static bool g_lastActive = false;
 static UINT_PTR kTimer = 0x3D2990;
@@ -259,12 +260,18 @@ static void* FindMainFrame(HWND host) {
 }
 
 static void* BuildOwnMfcWrapper(HWND page) {
+    static void* wrapper = nullptr;
+    static bool constructionFailed = false;
+    if (wrapper) return wrapper;
+    if (constructionFailed) return nullptr;
     HMODULE mfc = GetModuleHandleW(L"mfc100u.dll");
     if (!mfc) return nullptr;
     FARPROC init = GetProcAddress(mfc, "??0CWnd@@QEAA@XZ");
     FARPROC attach = GetProcAddress(mfc, "?Attach@CWnd@@QEAAHPEAUHWND__@@@Z");
     if (!init || !attach) {
-        Log(L"MFC CWnd constructor/Attach exports unavailable; native temporary fallback");
+        Log(L"Native 3D registration needs CWnd constructor and Attach exports; "
+            L"no Vision fallback is permitted.");
+        constructionFailed=true;
         return nullptr;
     }
     // The CWnd object is process-lifetime storage. Vendor page objects are
@@ -273,11 +280,13 @@ static void* BuildOwnMfcWrapper(HWND page) {
     if (!storage) return nullptr;
     if (!SafeAttachMfc(init,attach,storage,page)) {
         Log(L"Could not attach MFC CWnd wrapper to the 3D content HWND");
+        constructionFailed=true;
         // Leave memory allocated; an MFC constructor may have partially run.
         return nullptr;
     }
+    wrapper=storage;
     Log(L"3D content attached as its own native MFC CWnd");
-    return storage;
+    return wrapper;
 }
 
 static bool PerformNativeRegistration(unsigned char* image, void* frame,
@@ -305,6 +314,7 @@ static bool PerformNativeRegistration(unsigned char* image, void* frame,
 }
 
 static bool TryNativePageRegistration() {
+    if (g_registrationAborted) return false;
     if (g_ready || !g_host || !g_page) return g_ready;
     ++g_attempts;
     unsigned char* image = reinterpret_cast<unsigned char*>(GetModuleHandleW(nullptr));
@@ -344,13 +354,16 @@ static bool TryNativePageRegistration() {
     }
     g_usesOwnMfcWnd = true;
     if (!PerformNativeRegistration(image,frame,count,nativePage)) {
-        Log(L"ERROR: Native AddPage call did not complete");
+        Log(L"ERROR: Native AddPage call did not complete; refusing unsafe retries");
+        g_registrationAborted=true;
         return false;
     }
     size_t after = 0;
     if (!SafePageCount(frame,image,&after)) return false;
     if (after != count+1) {
-        Log(L"ERROR: native page-list count did not increase as expected");
+        Log(L"ERROR: native page-list count did not increase as expected; "
+            L"stopping subsequent registration attempts");
+        g_registrationAborted=true;
         return false;
     }
     g_frame=frame;
