@@ -86,6 +86,31 @@ def launcher_text() -> str:
             ')\r\n')
 
 
+def ensure_binaries(checkout: Path, log: Log = print) -> None:
+    missing = [name for name in BINARIES
+               if not (checkout / "dist" / "windows" / name).is_file()]
+    if not missing:
+        return
+    log("No prebuilt Windows DLL/launcher on main. Trying a local MSVC build...")
+    if os.name != "nt":
+        raise InstallationError("No compiled Windows x64 binaries. GitHub Actions build must succeed first.")
+    script = checkout / "Build-Native.cmd"
+    if not script.is_file():
+        raise InstallationError("No Windows binaries or local build script in the selected branch.")
+    result = subprocess.run(["cmd.exe", "/d", "/c", str(script)], cwd=checkout,
+                            text=True, encoding="utf-8", errors="replace", capture_output=True,
+                            creationflags=subprocess.CREATE_NO_WINDOW, check=False)
+    if result.returncode:
+        raise InstallationError("Cannot build the native page. Install the free Microsoft Visual Studio "
+                                "C++ Build Tools (Desktop development with C++) and retry.\n"
+                                + (result.stdout + result.stderr)[-1800:])
+    log((result.stdout + result.stderr)[-700:])
+    remaining = [name for name in BINARIES
+                 if not (checkout / "dist" / "windows" / name).is_file()]
+    if remaining:
+        raise InstallationError("Native build did not produce: " + ", ".join(remaining))
+
+
 def source_marker(target: Path) -> Path:
     return target / ADDON_DIR / MARKER_NAME
 
@@ -127,14 +152,8 @@ def install_or_update(target: Path, log: Log = print, repo_url: str = REPOSITORY
             raise InstallationError("Managed add-on files have local changes; commit or revert them before updating.")
         log("Fetching latest main branch (no releases)...")
         run_git(["-C", str(addon), "fetch", "origin", "main"], log=log)
-        for name in BINARIES:
-            ref_path = "dist/windows/" + name
-            if not run_git(["-C", str(addon), "ls-tree", "--name-only", "FETCH_HEAD", ref_path], log=lambda msg: None):
-                raise InstallationError(f"Latest main is missing {name}. Existing installed build is unchanged.")
         run_git(["-C", str(addon), "merge", "--ff-only", "FETCH_HEAD"], log=log)
-        for name in BINARIES:
-            if not (addon / "dist" / "windows" / name).is_file():
-                raise InstallationError(f"Latest main has no {name}. The Windows build must succeed first.")
+        ensure_binaries(addon, log=log)
         commit = run_git(["-C", str(addon), "rev-parse", "HEAD"], log=lambda msg: None)
         data = {**old, "commit": commit}
         source_marker(target).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -147,10 +166,7 @@ def install_or_update(target: Path, log: Log = print, repo_url: str = REPOSITORY
     with tempfile.TemporaryDirectory(prefix="uv3d-setup-", dir=target) as tmp:
         staged = Path(tmp) / "checkout"
         run_git(["clone", "--branch", "main", "--single-branch", repo_url, str(staged)], log=log)
-        for name in BINARIES:
-            if not (staged / "dist" / "windows" / name).is_file():
-                raise InstallationError(f"Windows binary '{name}' is not yet on main. Check GitHub Actions. "
-                                        "No PrintExp files have been changed.")
+        ensure_binaries(staged, log=log)
         commit = run_git(["-C", str(staged), "rev-parse", "HEAD"], log=lambda msg: None)
         staged.rename(addon)
     try:

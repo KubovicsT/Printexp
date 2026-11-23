@@ -17,7 +17,7 @@ This repository contains a reversible add-on for the **specific** PrintExp insta
 
 ## Installing
 
-1. Wait for the **Build Windows x64 add-on (main)** GitHub Action to succeed and commit `dist/windows/UV3DPage.dll` and `PrintExp3DLauncher.exe` to the `main` branch.
+1. Ideally the **Build Windows x64 add-on (main)** GitHub Action will compile and commit the two native files. If GitHub Actions is unavailable, the installer can compile the native components locally using **free Microsoft Visual Studio 2022 Build Tools**, with **Desktop development with C++** installed. The installer explains this if the build cannot run.
 2. Install **Python 3** and **Git for Windows** (Git Credential Manager recommended). Git needs access to this **private repository**. You may download this repository as ZIP only to bootstrap `Start-Installer.cmd`; the manager itself retrieves the latest branch using Git.
 3. Run `Start-Installer.cmd` (or `python installer.py`). A real window will open.
 4. Choose the folder containing `PrintExp_X64.exe` and `DeviceManager.dll`.
@@ -31,7 +31,7 @@ This repository contains a reversible add-on for the **specific** PrintExp insta
 
 Click **Update from main** in the same manager window. The updater does a Git fetch followed by a fast-forward-only merge of `main`, updating the add-on source and compiled DLL/EXE in place. It refuses to update locally edited tracked files. `PrintExp_X64.exe` and other vendor files are never updated by this tool. Close PrintExp before updating.
 
-The repository's Windows GitHub Action builds both native x64 components with MSVC and commits them back to **main** under `dist/windows/`. The script deliberately does not use GitHub releases. If the binaries are not yet on `main`, the manager will refuse a partial installation.
+The repository's Windows GitHub Action builds both native x64 components with MSVC and commits them back to **main** under `dist/windows/`. The script deliberately does not use GitHub releases. If the binaries are not yet on `main`, the manager attempts to compile them locally with MSVC before installing. It refuses a partial installation if no compiler is available.
 
 ## Uninstall
 
@@ -42,6 +42,7 @@ Close PrintExp and click **Uninstall**. Only the managed `UV3DAddOn/` directory 
 ```text
 README.md
 Start-Installer.cmd
+Build-Native.cmd              local x64 build fallback (free MSVC Build Tools)
 installer.py                  Tkinter graphical manager
 addon_manager_core.py        Git checkout, validation, update and uninstall
 config/stage1.ini             provisional native tab position
