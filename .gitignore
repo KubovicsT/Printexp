@@ -13,3 +13,7 @@ obj/
 
 # Optional user customization survives Git-main updates.
 /config/local-stage1.ini
+
+# Originals and diagnostics exist only in selected installations.
+/.host-patches/
+/diagnostics/

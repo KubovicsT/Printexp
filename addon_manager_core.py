@@ -12,6 +12,8 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+from host_backup import HostPatchError, verify_patched_host, restore_host_patches
+
 REPOSITORY = "https://github.com/KubovicsT/Printexp.git"
 ADDON_DIR = "UV3DAddOn"
 LAUNCHER_NAME = "Start PrintExp with 3D.cmd"
@@ -57,7 +59,7 @@ def validate_target(folder: Path, expected_sha: str = SUPPORTED_EXE_SHA256) -> P
     if not (folder / "DeviceManager.dll").is_file():
         raise InstallationError("This does not appear to be a complete PrintExp installation (DeviceManager.dll missing).")
     current = sha256(binary)
-    if current != expected_sha:
+    if current != expected_sha and not verify_patched_host(folder, "PrintExp_X64.exe", expected_sha):
         raise InstallationError("Unsupported PrintExp_X64.exe build. Stage 1 is pinned to the exact "
                                 "GongZhong V5.7.9.4.60 build inspected for this project.\n"
                                 f"Found SHA256: {current}\nExpected: {expected_sha}\n"
@@ -254,6 +256,12 @@ def install_or_update(target: Path, log: Log = print, repo_url: str = REPOSITORY
             try:
                 log("Preparing an updated add-on with freshly inherited PrintExp permissions...")
                 shutil.copytree(staged, candidate)
+                # In-folder originals must survive any Git-main add-on update.
+                original_backups = addon / ".host-patches"
+                if original_backups.exists():
+                    if original_backups.is_symlink():
+                        raise InstallationError("Host backup directory cannot be a link.")
+                    shutil.copytree(original_backups, candidate / ".host-patches")
                 local_settings = addon / "config" / "local-stage1.ini"
                 if local_settings.is_file() and not local_settings.is_symlink():
                     shutil.copy2(local_settings, candidate / "config" / "local-stage1.ini")
@@ -317,8 +325,11 @@ def uninstall(target: Path, log: Log = print) -> None:
     entry = target / LAUNCHER_NAME
     if not entry.is_file() or sha256(entry) != managed.get("launcher_sha256"):
         raise InstallationError("Launch script missing or edited. Aborting uninstall; no files removed.")
-    # Only our new directory and our own launcher are removed. Vendor files are never modified.
-    # The managed directory is intentionally reserved for source and binaries, not user projects.
+    # Restore originals before deleting their only verified backups.
+    try:
+        restore_host_patches(target)
+    except HostPatchError as exc:
+        raise InstallationError("Uninstall stopped to protect PrintExp: " + str(exc)) from exc
     remove_managed_directory(addon)
     entry.unlink()
     log("Removed all add-on files. Original PrintExp files are unchanged.")

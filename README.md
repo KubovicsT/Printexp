@@ -103,3 +103,26 @@ to restore automatic alignment. No original PrintExp configuration is changed.
 
 This remains a Stage 1 owned UI overlay. It has not yet been registered
 as a true native MFC top-level page.
+
+## Experimental native-page host patches (not activated yet)
+
+The original PrintExp main executable hardcodes the native navigation page
+names (`PageTask`, `PagePrint`, `PageSetting`, `PageAdjust`,
+`PageVoltage`, `PageAdvance`, `PageVisionPrint` and others). A true native
+MFC page requires verified integration with both the navigation and its
+page-switching/factory code. The current UI is an in-process overlay; **no
+vendor executable patch has been enabled yet**.
+
+`host_backup.py` is a **disabled-by-default** host patch transaction layer for
+that work. Every authorized change must verify the exact baseline SHA-256,
+store the original bytes and manifest in
+`<selected PrintExp folder>/UV3DAddOn/.host-patches/`, and verify the patched
+result. Future updates preserve this backup. Uninstall restores patched host
+files first, refuses unknown external changes, and only then deletes the add-on.
+
+This containment applies to PrintExp file modifications and in-folder backups.
+**The current Windows bootstrap still uses Windows temporary directories,
+downloads optional machine-wide dependencies, and saves the path in
+`%LOCALAPPDATA%`. It therefore does NOT yet satisfy a literal
+"zero writes outside the selected folder" requirement. A fully portable,
+in-folder bootstrap will be necessary before claiming that.**
