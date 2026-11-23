@@ -34,10 +34,10 @@ class SimulatedControllerTests(unittest.TestCase):
         (self.root/"UV3DAddOn").mkdir()
         (self.root/"UV3DAddOn"/".uv3d-managed-install.json").write_text("{}")
         original = (
-            b"; machine test config\\r\\n"
-            b"[PROJECT_CONFIG]\\r\\nPROJECT_MODE=0\\r\\n"
-            b"[COMM_CONFIG]\\r\\nServerIP=192.168.127.10\\r\\nServerPort=5001\\r\\n"
-            b"[PLC_COMM]\\r\\nServerIP=192.168.127.10\\r\\nServerPort=5001\\r\\n"
+            b"; machine test config\r\n"
+            b"[PROJECT_CONFIG]\r\nPROJECT_MODE=0\r\n"
+            b"[COMM_CONFIG]\r\nServerIP=192.168.127.10\r\nServerPort=5001\r\n"
+            b"[PLC_COMM]\r\nServerIP=192.168.127.10\r\nServerPort=5001\r\n"
         )
         ini = self.root/"Project.ini"
         ini.write_bytes(original)

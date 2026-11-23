@@ -25,26 +25,25 @@ def _change_ini(data: bytes, changes: dict[tuple[bytes, bytes], bytes]) -> bytes
     found = set()
     result = []
     for line in data.splitlines(keepends=True):
-        header = re.match(rb"^[ \t]*\[([A-Z0-9_]+)\]", line, re.I)
+        ending = b"\\r\\n" if line.endswith(b"\\r\\n") else (b"\\n" if line.endswith(b"\\n") else b"")
+        body = line[:-len(ending)] if ending else line
+        header = re.match(rb"^[ \\t]*\\[([A-Z0-9_]+)\\]", body, re.I)
         if header:
             current = header.group(1).upper()
-        match = re.match(rb"^([ \t]*)([A-Za-z0-9_]+)([ \t]*=[ \t]*)([^;\r\n]*)(.*)$", line)
-        if match and not line.lstrip().startswith((b";", b"#", b"//")):
+        match = re.match(rb"^([ \\t]*)([A-Za-z0-9_]+)([ \\t]*=[ \\t]*)([^;\\r\\n]*)(.*)$", body)
+        if match and not body.lstrip().startswith((b";", b"#", b"//")):
             key = (current, match.group(2).upper())
             if key in changes:
                 if key in found:
                     raise SimulationProfileError("Duplicate configuration key " + repr(key))
                 found.add(key)
-                suffix = match.group(5)
-                ending = b""
-                if suffix.endswith(b"\r\n"):
-                    ending = b"\r\n"
-                    suffix = suffix[:-2]
-                elif suffix.endswith(b"\n"):
-                    ending = b"\n"
-                    suffix = suffix[:-1]
-                # Retain original indentation, separators, comments and newline.
-                line = match.group(1) + match.group(2) + match.group(3) + changes[key] + suffix + ending
+                before_value = match.group(4).strip()
+                if key[1] == b"SERVERIP" and before_value != ORIGINAL:
+                    raise SimulationProfileError("Unexpected controller IP; refusing to overwrite: " + repr(before_value))
+                if key[1] == b"PROJECT_MODE" and before_value not in (b"0", b"1"):
+                    raise SimulationProfileError("Unexpected PrintExp project mode")
+                line = (match.group(1) + match.group(2) + match.group(3) +
+                        changes[key] + match.group(5) + ending)
         result.append(line)
     if not changes.keys() <= found:
         missing = changes.keys() - found
