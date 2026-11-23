@@ -37,6 +37,14 @@ class SingleWindowContractTests(unittest.TestCase):
         self.assertIn('UAC is requested on EVERY modification', text)
         self.assertIn("-WindowStyle Hidden", text)
 
+    def test_fresh_pc_without_saved_folder_can_open_browse_dialog(self):
+        bootstrap = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
+        self.assertIn("function Test-ExistingDirectory", bootstrap)
+        self.assertIn("[string]::IsNullOrWhiteSpace($Path)", bootstrap)
+        self.assertIn("if (Test-ExistingDirectory $previousSelection)", bootstrap)
+        self.assertIn("if (Test-ExistingDirectory '') { throw", bootstrap)
+        self.assertNotIn("Test-Path -LiteralPath $script:FolderInput.Text", bootstrap)
+
     def test_remembers_print_exp_folder(self):
         text = (ROOT / "Bootstrap-Installer.ps1").read_text()
         self.assertIn("selected-install.txt", text)
