@@ -92,7 +92,10 @@ class ManagerTests(unittest.TestCase):
         failed_once = False
         def fail_at_final_launcher_write(path, data):
             nonlocal failed_once
-            if path == self.vendor / LAUNCHER_NAME and not failed_once:
+            # The helper only writes our managed launch script. On Windows,
+            # TemporaryDirectory may use a reparse point so resolved and
+            # unresolved paths need not compare equal.
+            if not failed_once:
                 failed_once = True
                 raise PermissionError("simulated blocked launcher write")
             return write_launcher_bytes(path, data)
