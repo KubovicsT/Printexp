@@ -159,3 +159,36 @@ the vendor's proprietary MFC page-factory registration table. Its next step
 is native navigation factory integration after the diagnostic control IDs
 are verified. No printer/motion/UV controls are used by this Stage 1 page.
 The old draggable-popup coordinates are ignored by this new native layout.
+
+
+## Stage 1 native PrintExp page registration (experimental)
+
+The earlier manually drawn 3D tabs have been **removed**. Static analysis of
+the exact SHA-pinned vendor executable identified the internal routine used
+when the built-in Vision page appears after initialization:
+`PrintExp_X64.exe + 0x48530` (AddPage). The native list is held in
+`CMainFrame+0x4CC0`, and the selected-page index in `CMainFrame+0x4CBC`.
+
+The 3D DLL now attempts to call that same native AddPage function on
+PrintExp's main UI thread, after Vision is initialized, using the vendor's
+own CStringW initialization and translation functions. No direct binary patch
+is necessary for this experiment. This differs from the earlier child-tab
+overlay: the **tab itself must be created and selected by PrintExp**.
+
+The module tries to wrap the 3D content HWND as a native MFC CWnd. When
+the relevant MFC exports are unavailable, it can temporarily use Vision's
+existing MFC page object as a registration placeholder while handling the
+3D content separately. **That fallback is experimental and is not a complete
+independent native MFC page implementation.**
+
+This code has an exact-method signature guard and checks that PrintExp's
+page-list length increases by exactly one. The launcher only reports the
+3D page as ready after the actual native registration succeeds. It is not
+safe or supported on other PrintExp versions.
+
+Logs: `UV3DAddOn/diagnostics/native-page.log` (inside selected PrintExp).
+If the native 3D tab fails to appear, this log describes whether MFC frame
+lookup, Vision readiness, or native registration was the blocker.
+
+No printer or motor functions are called. Use only on your isolated test
+installation with the printer idle or disconnected.

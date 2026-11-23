@@ -1,325 +1,75 @@
-// Stage 1: purely visual in-process page. Does not load/call PrintExp printer APIs.
-// The DLL is loaded only by a targeted WH_GETMESSAGE hook for an exact, SHA-pinned build.
+// Stage 1 native navigation experiment for exact Gongzheng PrintExp x64 build.
+// The native PrintExp page list receives the 3D entry using its own AddPage method.
+// Printing, lamps, Z movement and vendor config writes are intentionally absent.
 #define WIN32_LEAN_AND_MEAN
 #if !defined(_WIN64)
-#error "PrintExp 3D Stage 1 must be compiled for Windows x64."
+#error "PrintExp 3D integration requires Windows x64."
 #endif
 #include <windows.h>
 #include <commctrl.h>
 #include <string>
-#include <vector>
-#include <cwchar>
-#include <cstdlib>
+#include <cstdint>
+#include <cstring>
 
 #pragma comment(lib, "User32.lib")
 #pragma comment(lib, "Gdi32.lib")
 #pragma comment(lib, "Comctl32.lib")
 
-static HINSTANCE g_module = nullptr;
+static HMODULE g_module = nullptr;
 static HWND g_host = nullptr;
-static HWND g_tab = nullptr;
 static HWND g_page = nullptr;
-static HWND g_navigationHost = nullptr;
-static int g_navProbeCount = 0;
-static int g_navOccludedCount = 0;
-static HHOOK g_navHook = nullptr;
-static bool g_active = false;
-static int g_tabTop = 7;
-static int g_tabLeft = -1;
-static int g_fallbackTabX = 1348;
-static int g_contentTop = 76;
-static int g_bottomReserve = 46;
-static constexpr int kTabWidth = 144;
-static constexpr int kTabHeight = 62;
-static bool g_dragging = false;
-static bool g_dragged = false;
-static bool g_positionCustomized = false;
-static bool g_visionAnchorReported = false;
-static POINT g_dragStart = {};
-static int g_dragStartLeft = 0;
-static int g_dragStartTop = 0;
-static constexpr UINT_PTR kRepositionTimer = 0x3D21;
-static unsigned g_probeTicks = 0;
-static constexpr UINT_PTR kSubclassId = 0x3D2026;
-static const wchar_t* kTabClass = L"UV3D_PrintExp_Tab_Stage1";
-static const wchar_t* kPageClass = L"UV3D_PrintExp_Page_Stage1";
+static void* g_frame = nullptr;
+static void* g_nativeWnd = nullptr;
+static int g_nativeIndex = -1;
+static int g_attempts = 0;
+static bool g_ready = false;
+static bool g_usesOwnMfcWnd = false;
+static bool g_lastActive = false;
+static UINT_PTR kTimer = 0x3D2990;
+static constexpr UINT_PTR kSubclass = 0x3D2026;
+static const wchar_t* kPageClass = L"UV3D_PrintExp_Registered_Page";
 
-// Log to the installed add-on (not to the user profile of the elevated account).
 static std::wstring AddonRoot() {
-    wchar_t name[MAX_PATH] = {};
-    if (!GetModuleFileNameW(g_module, name, MAX_PATH)) return L"";
-    std::wstring dir(name);
-    for (int i = 0; i < 3; ++i) { // module filename, windows, dist
-        size_t slash = dir.find_last_of(L"\\/");
+    wchar_t module[MAX_PATH] = {};
+    if (!GetModuleFileNameW(g_module, module, MAX_PATH)) return L"";
+    std::wstring folder(module);
+    for (int n = 0; n < 3; ++n) {
+        const size_t slash = folder.find_last_of(L"\\/");
         if (slash == std::wstring::npos) return L"";
-        dir.erase(slash);
+        folder.resize(slash);
     }
-    return dir;
+    return folder;
 }
 
-static void StageLog(const std::wstring& message) {
-    std::wstring root = AddonRoot();
+static void Log(const std::wstring& value) {
+    const std::wstring root = AddonRoot();
     if (root.empty()) return;
-    std::wstring folder = root + L"\\diagnostics";
-    CreateDirectoryW(folder.c_str(), nullptr);
-    const std::wstring file = folder + L"\\stage1.log";
-    HANDLE handle = CreateFileW(file.c_str(), FILE_APPEND_DATA,
-        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL, nullptr);
+    const std::wstring dir = root + L"\\diagnostics";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    const std::wstring path = dir + L"\\native-page.log";
+    HANDLE handle = CreateFileW(path.c_str(), FILE_APPEND_DATA,
+       FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) return;
     SYSTEMTIME now = {};
     GetLocalTime(&now);
-    wchar_t stamp[80] = {};
-    swprintf_s(stamp, L"[%04u-%02u-%02u %02u:%02u:%02u] PID=%lu ",
-        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute,
-        now.wSecond, GetCurrentProcessId());
-    std::wstring line = std::wstring(stamp) + message + L"\r\n";
-    const int count = WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1,
-        nullptr, 0, nullptr, nullptr);
-    if (count > 1) {
-        std::vector<char> encoded(static_cast<size_t>(count));
-        WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1,
-            encoded.data(), count, nullptr, nullptr);
+    wchar_t timestamp[90] = {};
+    swprintf_s(timestamp, L"[%04u-%02u-%02u %02u:%02u:%02u] ",
+       now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+    std::wstring line = timestamp + value + L"\r\n";
+    const int n = WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (n > 1) {
+        std::string bytes(static_cast<size_t>(n), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1, &bytes[0], n, nullptr, nullptr);
         DWORD written = 0;
-        WriteFile(handle, encoded.data(), static_cast<DWORD>(count - 1), &written, nullptr);
+        WriteFile(handle, bytes.data(), static_cast<DWORD>(n-1), &written, nullptr);
     }
     CloseHandle(handle);
 }
 
-static std::wstring ConfigFile() {
-    const std::wstring root = AddonRoot();
-    if (root.empty()) return L"";
-    const std::wstring local = root + L"\\config\\native-page.ini";
-    if (GetFileAttributesW(local.c_str()) != INVALID_FILE_ATTRIBUTES) return local;
-    return root + L"\\config\\stage1.ini";
-}
-
-static void RectPaint(HDC dc, RECT r, COLORREF fill) {
-    HBRUSH b = CreateSolidBrush(fill);
-    FillRect(dc, &r, b);
-    DeleteObject(b);
-}
-
-static void Position();
-static void DumpNativeUi(const wchar_t* reason);
-
-static void SaveTabLocation() {
-    const std::wstring root = AddonRoot();
-    if (root.empty()) return;
-    const std::wstring path = root + L"\\config\\local-stage1.ini";
-    const std::wstring x = std::to_wstring(g_tabLeft);
-    const std::wstring y = std::to_wstring(g_tabTop);
-    if (!WritePrivateProfileStringW(L"Stage1", L"tab_x", x.c_str(), path.c_str()) ||
-        !WritePrivateProfileStringW(L"Stage1", L"tab_y", y.c_str(), path.c_str())) {
-        StageLog(L"WARNING: Could not save 3D tab coordinates, Win32=" +
-                 std::to_wstring(GetLastError()));
-    } else {
-        StageLog(L"Saved 3D tab position: x=" + x + L", y=" + y);
-    }
-}
-
-struct VisionAnchor { HWND host; bool found; int right; int top; int score; };
-static BOOL CALLBACK FindVisionControl(HWND child, LPARAM param) {
-    auto* anchor = reinterpret_cast<VisionAnchor*>(param);
-    if (!IsWindowVisible(child)) return TRUE;
-    wchar_t label[160] = {};
-    GetWindowTextW(child, label, 160);
-    if (!wcsstr(label, L"Vision") &&
-        !wcsstr(label, L"VISION") &&
-        !wcsstr(label, L"vision")) return TRUE;
-    RECT bounds = {};
-    if (!GetWindowRect(child, &bounds)) return TRUE;
-    POINT point = {bounds.left, bounds.top};
-    if (!ScreenToClient(anchor->host, &point)) return TRUE;
-    const int width = bounds.right - bounds.left;
-    const int height = bounds.bottom - bounds.top;
-    if (point.x < 0 || point.y < 0 || point.y > 140 ||
-        width < 25 || width > 260 || height < 20 || height > 100) return TRUE;
-    const int score = point.y * 1000 + width;
-    if (!anchor->found || score < anchor->score) {
-        anchor->found = true;
-        anchor->right = point.x + width;
-        anchor->top = point.y;
-        anchor->score = score;
-    }
-    return TRUE;
-}
-
-
-struct NavigationContainerSearch {
-    HWND root;
-    POINT anchor;
-    HWND best;
-    int score;
-};
-
-static BOOL CALLBACK FindNavigationContainer(HWND child, LPARAM param) {
-    auto* query = reinterpret_cast<NavigationContainerSearch*>(param);
-    if (child == g_tab || child == g_page || !IsWindowVisible(child)) return TRUE;
-    RECT bounds = {};
-    if (!GetWindowRect(child, &bounds)) return TRUE;
-    const int width = bounds.right - bounds.left;
-    const int height = bounds.bottom - bounds.top;
-    // Existing PrintExp page controls sit beneath a full-width ~80 px header.
-    // A wide header child that covers the target point is a safer parent for
-    // our button than the top-level frame, where child panes can occlude it.
-    if (width < 600 || height < 50 || height > 160 ||
-        !PtInRect(&bounds, query->anchor)) return TRUE;
-    POINT clientOrigin = {bounds.left, bounds.top};
-    ScreenToClient(query->root, &clientOrigin);
-    if (clientOrigin.y < -25 || clientOrigin.y > 95) return TRUE;
-    const int score = abs(height - 78) * 100 + abs(clientOrigin.y) * 6 +
-                      (width > 4000 ? 100000 : 0);
-    if (!query->best || score < query->score) {
-        query->best = child;
-        query->score = score;
-    }
-    return TRUE;
-}
-
-static HWND FindNavigationHost(int x, int y) {
-    if (!g_host || !IsWindow(g_host)) return nullptr;
-    POINT point = {x, y};
-    ClientToScreen(g_host, &point);
-    NavigationContainerSearch query = {g_host, point, nullptr, 0x7fffffff};
-    EnumChildWindows(g_host, FindNavigationContainer,
-                     reinterpret_cast<LPARAM>(&query));
-    if (query.best) return query.best;
-    // If the custom navigation doesn't have a full-width child, inspect the
-    // actual window visible at a blank point next to Vision. Never use our tab.
-    if (g_tab && IsWindow(g_tab)) ShowWindow(g_tab, SW_HIDE);
-    HWND hit = WindowFromPoint(point);
-    if (g_tab && IsWindow(g_tab)) ShowWindow(g_tab, SW_SHOW);
-    if (!hit || hit == g_host || hit == g_tab || hit == g_page ||
-        !IsChild(g_host, hit)) return nullptr;
-    HWND current = hit;
-    while (current && GetParent(current) && GetParent(current) != g_host) {
-        current = GetParent(current);
-    }
-    if (current == g_tab || current == g_page) return nullptr;
-    RECT bounds = {};
-    if (!GetWindowRect(current, &bounds)) return nullptr;
-    const int height = bounds.bottom - bounds.top;
-    if (height > 240 || height < 48) return nullptr;
-    return current;
-}
-
-static void AttachNavigationTab(int left, int top) {
-    if (!g_tab || !IsWindow(g_tab) || !g_host || !IsWindow(g_host)) return;
-    HWND candidate = FindNavigationHost(left + kTabWidth / 2,
-                                        top + kTabHeight / 2);
-    if (!candidate) return;  // Frame remains the fallback parent.
-    if (candidate == g_tab || candidate == g_page ||
-        IsChild(g_tab, candidate)) return;
-    if (candidate != g_navigationHost || GetParent(g_tab) != candidate) {
-        SetLastError(ERROR_SUCCESS);
-        HWND oldParent = SetParent(g_tab, candidate);
-        if (!oldParent && GetLastError() != ERROR_SUCCESS) {
-            StageLog(L"WARNING: Could not attach 3D tab to navigation control, Win32=" +
-                std::to_wstring(GetLastError()));
-            return;
-        }
-        g_navigationHost = candidate;
-        wchar_t cls[128] = {};
-        GetClassNameW(candidate, cls, 128);
-        StageLog(L"Attached 3D child tab to PrintExp navigation container class=" +
-            std::wstring(cls) + L" HWND=" +
-            std::to_wstring(reinterpret_cast<UINT_PTR>(candidate)));
-    }
-}
-
-static void VerifyTabVisibility() {
-    if (!g_tab || !IsWindow(g_tab)) return;
-    RECT bounds = {};
-    if (!GetWindowRect(g_tab, &bounds)) return;
-    POINT center = {(bounds.left + bounds.right) / 2,
-                    (bounds.top + bounds.bottom) / 2};
-    HWND topHit = WindowFromPoint(center);
-    if (topHit == g_tab || (topHit && IsChild(g_tab, topHit))) {
-        g_navOccludedCount = 0;
-        if (g_navProbeCount < 2) {
-            StageLog(L"3D tab hit-test passed: visible at x=" +
-                std::to_wstring(center.x) + L" y=" +
-                std::to_wstring(center.y));
-        }
-    } else {
-        ++g_navOccludedCount;
-        if (g_navOccludedCount == 1 || g_navOccludedCount == 10) {
-            wchar_t cls[128] = {};
-            if (topHit) GetClassNameW(topHit, cls, 128);
-            StageLog(L"WARNING: 3D tab is covered at x=" +
-                std::to_wstring(center.x) + L" y=" +
-                std::to_wstring(center.y) + L"; top window=" +
-                cls + L"; expected tab HWND=" +
-                std::to_wstring(reinterpret_cast<UINT_PTR>(g_tab)) +
-                L"; top HWND=" + std::to_wstring(reinterpret_cast<UINT_PTR>(topHit)));
-        }
-    }
-    ++g_navProbeCount;
-}
-
-static void Deactivate3D(const wchar_t* reason) {
-    if (!g_active) return;
-    g_active = false;
-    if (g_page && IsWindow(g_page)) ShowWindow(g_page, SW_HIDE);
-    if (g_tab && IsWindow(g_tab)) InvalidateRect(g_tab, nullptr, TRUE);
-    StageLog(std::wstring(L"3D child page closed: ") + reason);
-}
-
-static LRESULT CALLBACK NativeNavHook(int code, WPARAM wp, LPARAM lp) {
-    // The vendor receives every original navigation click unchanged.
-    if (code == HC_ACTION && lp && g_active && g_host && IsWindow(g_host)) {
-        const MSG* msg = reinterpret_cast<const MSG*>(lp);
-        if (msg->message == WM_LBUTTONDOWN) {
-            POINT screenPoint = msg->pt;
-            RECT ownTab = {};
-            if (g_tab && IsWindow(g_tab)) GetWindowRect(g_tab, &ownTab);
-            if (!PtInRect(&ownTab, screenPoint)) {
-                POINT pt = screenPoint;
-                ScreenToClient(g_host, &pt);
-                RECT client = {};
-                GetClientRect(g_host, &client);
-                if (pt.x >= 0 && pt.x < client.right &&
-                    pt.y >= 0 && pt.y <= g_contentTop) {
-                    Deactivate3D(L"original top navigation clicked");
-                }
-            }
-        }
-    }
-    return CallNextHookEx(g_navHook, code, wp, lp);
-}
-
-static LRESULT CALLBACK TabProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    switch(msg) {
-        case WM_SETCURSOR: SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE;
-        case WM_LBUTTONUP:
-            if (g_page) {
-                g_active = !g_active;
-                StageLog(g_active ? L"3D child page selected" : L"3D child page deselected");
-                ShowWindow(g_page, g_active ? SW_SHOW : SW_HIDE);
-                Position();
-                InvalidateRect(hwnd, nullptr, TRUE);
-            }
-            return 0;
-        case WM_PAINT: {
-            PAINTSTRUCT ps = {};
-            HDC dc = BeginPaint(hwnd, &ps);
-            RECT r = {};
-            GetClientRect(hwnd, &r);
-            RectPaint(dc, r, g_active ? RGB(52,52,52) : RGB(96,96,96));
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, RGB(255,255,255));
-            HFONT font = CreateFontW(-23,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,
-                                    DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
-            HGDIOBJ old = SelectObject(dc, font);
-            DrawTextW(dc,L"3D",-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-            SelectObject(dc,old);
-            DeleteObject(font);
-            EndPaint(hwnd,&ps);
-            return 0;
-        }
-    }
-    return DefWindowProcW(hwnd,msg,wp,lp);
+static void PaintFill(HDC dc, RECT rect, COLORREF color) {
+    HBRUSH brush = CreateSolidBrush(color);
+    FillRect(dc, &rect, brush);
+    DeleteObject(brush);
 }
 
 static LRESULT CALLBACK PageProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -331,250 +81,304 @@ static LRESULT CALLBACK PageProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         GetClientRect(hwnd, &rect);
         const int width = rect.right;
         const int height = rect.bottom;
-        const int sideWidth = width > 900 ? 350 : 270;
-        const int dividerX = width > sideWidth + 250 ? width - sideWidth : width - 250;
-
-        RectPaint(dc, rect, RGB(243,244,246));
-        // Existing PrintExp pages have a gray command strip immediately
-        // beneath their top navigation. The Stage 1 toolbar is read-only.
-        RECT toolbar = {0,0,width,76};
-        RectPaint(dc, toolbar, RGB(97,97,97));
+        PaintFill(dc, rect, RGB(245,246,247));
+        RECT tools = {0,0,width,76};
+        PaintFill(dc, tools, RGB(96,96,96));
         SetBkMode(dc, TRANSPARENT);
-        HFONT regular = CreateFontW(-19,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,
-            DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
-        HFONT big = CreateFontW(-28,0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,
-            DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
-        HGDIOBJ old = SelectObject(dc, regular);
-        SetTextColor(dc, RGB(236,236,236));
-        const wchar_t* actions[] = {L"Model",L"Slice",L"Supports",L"Gantry",L"Preview"};
-        int x = 34;
+        HFONT normal = CreateFontW(-19,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,
+                                   DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
+        HFONT heading = CreateFontW(-29,0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,
+                                    DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
+        HGDIOBJ original = SelectObject(dc, normal);
+        SetTextColor(dc, RGB(245,245,245));
+        const wchar_t* actions[] = {L"Model", L"Slice", L"Supports", L"Gantry", L"Preview"};
         for (int i=0; i<5; ++i) {
-            RECT area = {x,15,x+120,62};
-            DrawTextW(dc, actions[i], -1, &area, DT_LEFT|DT_VCENTER|DT_SINGLELINE);
-            x += 143;
+            RECT item = {28+i*145,12,158+i*145,64};
+            DrawTextW(dc,actions[i],-1,&item,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
         }
-
-        if (width > 400 && height > 180) {
-            RECT canvas = {20,96,dividerX-18,height-18};
-            RectPaint(dc, canvas, RGB(255,255,255));
-            HBRUSH border = CreateSolidBrush(RGB(199,204,208));
-            FrameRect(dc, &canvas, border);
-            DeleteObject(border);
-
-            SelectObject(dc, big);
-            SetTextColor(dc, RGB(47,55,64));
-            RECT title = {canvas.left+28,canvas.top+25,canvas.right-18,canvas.top+72};
-            DrawTextW(dc,L"3D workspace",-1,&title,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
-            SelectObject(dc,regular);
-            SetTextColor(dc,RGB(93,105,116));
-            RECT message = {canvas.left+28,canvas.top+100,canvas.right-28,canvas.top+240};
+        const int side = width > 950 ? 345 : 260;
+        const int split = width - side;
+        RECT canvas = {20,96,split-16,height-18};
+        if (canvas.right > canvas.left && canvas.bottom > canvas.top) {
+            PaintFill(dc,canvas,RGB(255,255,255));
+            SelectObject(dc,heading);
+            SetTextColor(dc,RGB(43,51,58));
+            RECT title = {canvas.left+30,canvas.top+30,canvas.right-20,canvas.top+84};
+            DrawTextW(dc,L"PrintExp 3D",-1,&title,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+            SelectObject(dc,normal);
+            SetTextColor(dc,RGB(93,102,110));
+            RECT note = {canvas.left+30,canvas.top+110,canvas.right-30,canvas.top+240};
             DrawTextW(dc,
-                L"Embedded inside PrintExp. This stage tests the navigation and workspace.\n"
-                L"Model import, slicing, UV curing and motor control are not connected yet.\n"
-                L"Select Print, Settings, Adjust or Vision to switch to the original pages.",
-                -1,&message,DT_WORDBREAK);
-
-            RECT side = {dividerX,76,width,height};
-            RectPaint(dc,side,RGB(77,77,77));
-            const wchar_t* sections[] = {L"3D job",L"Model",L"Slice settings",L"Supports",
-                                          L"Gantry",L"Simulation"};
-            SetTextColor(dc,RGB(244,244,244));
-            for (int i=0; i<6; ++i) {
-                RECT line = {dividerX+22,96+i*78,width-18,140+i*78};
-                DrawTextW(dc,sections[i],-1,&line,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
-                if (i<5) {
-                    HPEN pen = CreatePen(PS_SOLID,1,RGB(112,112,112));
-                    HGDIOBJ savedPen = SelectObject(dc,pen);
-                    MoveToEx(dc,dividerX+20,157+i*78,nullptr);
-                    LineTo(dc,width-18,157+i*78);
-                    SelectObject(dc,savedPen);
-                    DeleteObject(pen);
-                }
-            }
+                L"Registered through PrintExp's native page list.\n"
+                L"Stage 1: user-interface integration only.\n"
+                L"Printing, Z-axis motion and UV lamp commands are disabled.",
+                -1,&note,DT_LEFT|DT_WORDBREAK);
         }
-        SelectObject(dc,old);
-        DeleteObject(regular);
-        DeleteObject(big);
+        RECT panel = {split,76,width,height};
+        PaintFill(dc,panel,RGB(77,77,77));
+        SetTextColor(dc,RGB(244,244,244));
+        const wchar_t* groups[] = {L"3D job",L"Model",L"Slice settings",L"Supports",
+                                    L"Gantry",L"Simulation"};
+        for (int i=0; i<6; ++i) {
+            RECT line = {split+18,104+i*77,width-12,144+i*77};
+            DrawTextW(dc,groups[i],-1,&line,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        }
+        SelectObject(dc,original);
+        DeleteObject(normal);
+        DeleteObject(heading);
         EndPaint(hwnd,&ps);
         return 0;
     }
     return DefWindowProcW(hwnd,msg,wp,lp);
 }
 
-static void Position() {
-    if (!g_host || !IsWindow(g_host)) return;
-    if (!g_tab || !IsWindow(g_tab) || !g_page || !IsWindow(g_page)) return;
-    RECT rect = {};
-    GetClientRect(g_host, &rect);
-    const int width = rect.right - rect.left;
-    const int height = rect.bottom - rect.top;
-    if (!g_positionCustomized && !g_dragging) {
-        VisionAnchor vision = {g_host, false, 0, 0, 0};
-        EnumChildWindows(g_host, FindVisionControl,
-                         reinterpret_cast<LPARAM>(&vision));
-        if (vision.found) {
-            g_tabLeft = vision.right + 7;
-            g_tabTop = vision.top;
-            if (!g_visionAnchorReported) {
-                StageLog(L"3D child tab positioned after Vision");
-                g_visionAnchorReported = true;
-            }
+using NativeAddPage = void(__fastcall*)(void*,int,void*,void*,int);
+using NativeCount = size_t(__fastcall*)(void*);
+using NativeInitString = void*(__fastcall*)(void*);
+using NativeDestroyString = void(__fastcall*)(void*);
+using NativeTranslate = void*(__fastcall*)(void*,void*,const wchar_t*);
+using MfcMainWnd = void*(__cdecl*)();
+using MfcFromHandle = void*(__cdecl*)(HWND);
+using MfcWndCtor = void*(__fastcall*)(void*);
+using MfcWndAttach = int(__fastcall*)(void*,HWND);
+
+static void* FindMainFrame(HWND host) {
+    HMODULE mfc = GetModuleHandleW(L"mfc100u.dll");
+    if (!mfc) { Log(L"MFC runtime is not loaded"); return nullptr; }
+    const char* mainNames[] = {
+        "?AfxGetMainWnd@@YAPEAVCWnd@@XZ",
+        "?AfxGetMainWnd@@YAPAVCWnd@@XZ"
+    };
+    void* frame = nullptr;
+    for (const char* name : mainNames) {
+        FARPROC proc = GetProcAddress(mfc, name);
+        if (proc) {
+            frame = reinterpret_cast<MfcMainWnd>(proc)();
+            if (frame) break;
         }
     }
-    const int preferredX = g_tabLeft >= 0 ? g_tabLeft : g_fallbackTabX;
-    const int x = preferredX > width - kTabWidth ?
-          (width > kTabWidth ? width - kTabWidth : 0) :
-          (preferredX > 0 ? preferredX : 0);
-    const int contentHeight = height - g_contentTop - g_bottomReserve;
-    // Child page follows the PrintExp main frame. It cannot float above
-    // unrelated applications and moves/minimizes with the host.
-    SetWindowPos(g_page, HWND_TOP, 0, g_contentTop,
-                 width > 0 ? width : 1,
-                 contentHeight > 0 ? contentHeight : 1,
-                 SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-    if (!g_active) ShowWindow(g_page, SW_HIDE);
-    // Attach to PrintExp's actual top navigation child when available. The
-    // root frame alone can contain an owner-drawn child that covers our tab.
-    if (GetParent(g_tab) == g_host || !g_navigationHost ||
-        !IsWindow(g_navigationHost)) {
-        AttachNavigationTab(x, g_tabTop);
+    if (!frame) {
+        FARPROC from = GetProcAddress(mfc, "?FromHandlePermanent@CWnd@@SAPEAV1@PEAUHWND__@@@Z");
+        if (from) frame = reinterpret_cast<MfcFromHandle>(from)(host);
     }
-    POINT local = {x, g_tabTop};
-    HWND parent = GetParent(g_tab);
-    if (parent && parent != g_host) {
-        MapWindowPoints(g_host, parent, &local, 1);
+    if (!frame) {
+        Log(L"Native registration: could not resolve a permanent MFC main-frame object");
+        return nullptr;
     }
-    SetWindowPos(g_tab, HWND_TOP, local.x, local.y, kTabWidth, kTabHeight,
-                 SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-    VerifyTabVisibility();
+    // Check that this is the permanent wrapper for the exact selected HWND.
+    bool matches = false;
+    __try {
+        const auto* bytes = static_cast<const unsigned char*>(frame);
+        for (size_t i=0; i<=0x100; i+=sizeof(void*)) {
+            HWND candidate = nullptr;
+            std::memcpy(&candidate, bytes+i, sizeof(candidate));
+            if (candidate==host) { matches=true; break; }
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) { matches=false; }
+    if (!matches) {
+        Log(L"Native registration: MFC frame pointer did not match PrintExp HWND");
+        return nullptr;
+    }
+    return frame;
 }
 
-static LRESULT CALLBACK HostSubclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
-                                     UINT_PTR id, DWORD_PTR ref) {
-    if (message == WM_NCDESTROY) {
-        StageLog(L"Host main window closed; removing UI overlay");
-        KillTimer(hwnd, kRepositionTimer);
-        if (g_navHook) { UnhookWindowsHookEx(g_navHook); g_navHook = nullptr; }
-        if (g_page && IsWindow(g_page)) DestroyWindow(g_page);
-        if (g_tab && IsWindow(g_tab)) DestroyWindow(g_tab);
-        RemoveWindowSubclass(hwnd, HostSubclass, id);
-        g_host = nullptr; g_tab = nullptr; g_page = nullptr;
-        g_navigationHost = nullptr; g_active = false;
-        return DefSubclassProc(hwnd, message, wp, lp);
+static void* BuildOwnMfcWrapper(HWND page) {
+    HMODULE mfc = GetModuleHandleW(L"mfc100u.dll");
+    if (!mfc) return nullptr;
+    FARPROC init = GetProcAddress(mfc, "??0CWnd@@QEAA@XZ");
+    FARPROC attach = GetProcAddress(mfc, "?Attach@CWnd@@QEAAHPEAUHWND__@@@Z");
+    if (!init || !attach) {
+        Log(L"MFC CWnd constructor/Attach exports unavailable; native temporary fallback");
+        return nullptr;
     }
-    if (message == WM_TIMER && wp == kRepositionTimer) {
-        Position(); // Vision can appear after PrintExp startup.
-        ++g_probeTicks;
-        if (g_probeTicks == 3) DumpNativeUi(L"1.8 seconds after registration");
-        if (g_probeTicks == 15) DumpNativeUi(L"9 seconds after registration");
-        if (g_probeTicks == 40) DumpNativeUi(L"24 seconds after registration");
-        return 0;
+    // The CWnd object is process-lifetime storage. Vendor page objects are
+    // likewise retained for the lifetime of PrintExp.
+    void* storage = VirtualAlloc(nullptr, 4096, MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
+    if (!storage) return nullptr;
+    bool attached = false;
+    __try {
+        reinterpret_cast<MfcWndCtor>(init)(storage);
+        attached = reinterpret_cast<MfcWndAttach>(attach)(storage,page)!=0;
+    } __except(EXCEPTION_EXECUTE_HANDLER) { attached=false; }
+    if (!attached) {
+        Log(L"Could not attach MFC CWnd wrapper to the 3D content HWND");
+        // Leave memory allocated; an MFC constructor may have partially run.
+        return nullptr;
     }
-    if (message == WM_COMMAND) {
-        StageLog(L"native-nav event: WM_COMMAND id=" +
-            std::to_wstring(LOWORD(wp)) + L" code=" +
-            std::to_wstring(HIWORD(wp)));
-    }
-    if (message == WM_NOTIFY) {
-        StageLog(L"native-nav event: WM_NOTIFY id=" + std::to_wstring(wp));
-    }
-    LRESULT value = DefSubclassProc(hwnd, message, wp, lp);
-    if (message == WM_SIZE || message == WM_MOVE ||
-        message == WM_WINDOWPOSCHANGED || message == WM_SHOWWINDOW) {
-        Position();
-    }
-    return value;
+    Log(L"3D content attached as its own native MFC CWnd");
+    return storage;
 }
 
-static bool Create3DPage(HWND host) {
-    if (!IsWindow(host) || GetAncestor(host, GA_ROOT) != host) return false;
-    DWORD pid = 0;
-    DWORD thread = GetWindowThreadProcessId(host, &pid);
-    if (pid != GetCurrentProcessId() || thread != GetCurrentThreadId()) return false;
-    // No search for the first visible window! The launcher posts WM_NULL to
-    // the chosen main window, and the hook receives that EXACT HWND.
-    HMODULE pin = nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-                            reinterpret_cast<LPCWSTR>(&Create3DPage), &pin)) {
-        StageLog(L"FAILED: GetModuleHandleEx PIN");
+static bool PerformNativeRegistration(unsigned char* image, void* frame,
+                                      size_t index, void* pageObject) {
+    // Exact RVAs extracted from the user's original SHA-pinned PrintExp_X64.exe.
+    auto* initSlot = reinterpret_cast<NativeInitString*>(image+0x1f9e28);
+    auto* destroySlot = reinterpret_cast<NativeDestroyString*>(image+0x1f9e30);
+    if (!*initSlot || !*destroySlot) return false;
+    void* label = nullptr;
+    bool added = false;
+    __try {
+        (*initSlot)(&label);
+        auto translated = reinterpret_cast<NativeTranslate>(image+0x11490)(
+            image+0x292468,&label,L"3D");
+        if (translated) {
+            reinterpret_cast<NativeAddPage>(image+0x48530)(
+                frame, static_cast<int>(index), pageObject, translated, 1);
+            added = true;
+        }
+        (*destroySlot)(&label);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        added = false;
+    }
+    return added;
+}
+
+static bool TryNativePageRegistration() {
+    if (g_ready || !g_host || !g_page) return g_ready;
+    ++g_attempts;
+    unsigned char* image = reinterpret_cast<unsigned char*>(GetModuleHandleW(nullptr));
+    if (!image) return false;
+    // Guard the page-register function signature for the known PrintExp build.
+    const unsigned char methodSignature[] = {0x4c,0x89,0x4c,0x24,0x20,0x4c,0x89,0x44,0x24,0x18};
+    if (std::memcmp(image+0x48530,methodSignature,sizeof(methodSignature))!=0) {
+        if (g_attempts==1) Log(L"Native page function signature mismatch; refusing to call.");
         return false;
     }
-    const std::wstring ini = ConfigFile();
-    if (!ini.empty()) {
-        g_tabTop = GetPrivateProfileIntW(L"Stage1", L"tab_y", 7, ini.c_str());
-        g_tabLeft = GetPrivateProfileIntW(L"Stage1", L"tab_x", -1, ini.c_str());
-        g_positionCustomized = g_tabLeft >= 0;
-        g_fallbackTabX = GetPrivateProfileIntW(L"Stage1", L"fallback_tab_x", 1348, ini.c_str());
-        g_contentTop = GetPrivateProfileIntW(L"Stage1", L"page_y", 76, ini.c_str());
-        g_bottomReserve = GetPrivateProfileIntW(L"Stage1", L"bottom_bar_height", 46, ini.c_str());
-    }
-    WNDCLASSW cls = {};
-    cls.hInstance = g_module;
-    cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    cls.lpfnWndProc = TabProc;
-    cls.lpszClassName = kTabClass;
-    if (!RegisterClassW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        StageLog(L"FAILED: RegisterClass tab Windows error " + std::to_wstring(GetLastError()));
+    void* frame = FindMainFrame(g_host);
+    if (!frame) return false;
+    size_t count = 0;
+    int visionEnabled = 0;
+    void* visionWnd = static_cast<unsigned char*>(frame)+0xf7168;
+    __try {
+        visionEnabled = *reinterpret_cast<int*>(static_cast<unsigned char*>(frame)+0xf76a0);
+        count = reinterpret_cast<NativeCount>(image+0x340c0)(
+            static_cast<unsigned char*>(frame)+0x4cc0);
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+    if (!visionEnabled) {
+        if (g_attempts==1 || g_attempts==12) Log(L"Waiting for PrintExp to register Vision first...");
         return false;
     }
-    cls.lpfnWndProc = PageProc;
-    cls.lpszClassName = kPageClass;
-    if (!RegisterClassW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        StageLog(L"FAILED: RegisterClass page Windows error " + std::to_wstring(GetLastError()));
+    if (count<6 || count>24) {
+        Log(L"Native page vector count outside expected range; aborting");
         return false;
     }
-    if (!SetWindowSubclass(host, HostSubclass, kSubclassId, 0)) {
-        StageLog(L"FAILED: SetWindowSubclass");
+    // Prefer a dedicated MFC CWnd wrapper for the 3D content. If this MFC
+    // runtime doesn't export constructor/Attach, reuse the already initialized
+    // Vision page *object* only as an experimental registration placeholder.
+    void* nativePage = BuildOwnMfcWrapper(g_page);
+    if (!nativePage) {
+        nativePage = visionWnd;
+        Log(L"Using stable built-in Vision CWnd as native registration placeholder");
+    } else {
+        g_usesOwnMfcWnd = true;
+    }
+    if (!PerformNativeRegistration(image,frame,count,nativePage)) {
+        Log(L"ERROR: Native AddPage call did not complete");
         return false;
     }
-    g_host = host;
-    // Both are child controls in the native PrintExp main frame.
-    g_page = CreateWindowExW(0, kPageClass, L"UV3D Stage 1",
-                            WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
-                            0, g_contentTop, 600, 400,
-                            g_host, nullptr, g_module, nullptr);
-    g_tab = CreateWindowExW(0, kTabClass, L"3D",
-                           WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
-                           g_fallbackTabX, g_tabTop, kTabWidth, kTabHeight,
-                           g_host, nullptr, g_module, nullptr);
-    if (!g_page || !g_tab) {
-        StageLog(L"FAILED: CreateWindowEx Windows error " + std::to_wstring(GetLastError()));
-        if (g_tab) DestroyWindow(g_tab);
-        if (g_page) DestroyWindow(g_page);
-        RemoveWindowSubclass(g_host, HostSubclass, kSubclassId);
-        g_host = nullptr; g_tab = nullptr; g_page = nullptr;
+    size_t after = 0;
+    __try {
+        after = reinterpret_cast<NativeCount>(image+0x340c0)(
+            static_cast<unsigned char*>(frame)+0x4cc0);
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+    if (after != count+1) {
+        Log(L"ERROR: native page-list count did not increase as expected");
         return false;
     }
-    g_navHook = SetWindowsHookExW(WH_GETMESSAGE, NativeNavHook, g_module, GetCurrentThreadId());
-    if (!g_navHook) StageLog(L"WARNING: navigation watcher unavailable, Win32=" +
-                                    std::to_wstring(GetLastError()));
-    SetTimer(g_host, kRepositionTimer, 600, nullptr);
-    Position();
-    if (!IsWindowVisible(g_tab)) {
-        StageLog(L"WARNING: 3D tab window exists but is not visible after creation.");
+    g_frame=frame;
+    g_nativeWnd=nativePage;
+    g_nativeIndex=static_cast<int>(count);
+    g_ready=true;
+    Log(L"SUCCESS: PrintExp native AddPage registered 3D at index=" +
+        std::to_wstring(g_nativeIndex) + L", total=" + std::to_wstring(after));
+    std::wstring eventName=L"Local\\UV3D_PageReady_"+std::to_wstring(GetCurrentProcessId());
+    HANDLE ready=OpenEventW(EVENT_MODIFY_STATE,FALSE,eventName.c_str());
+    if (ready) { SetEvent(ready); CloseHandle(ready); }
+    return true;
+}
+
+static void Position3D() {
+    if (!g_ready || !g_host || !g_page || !IsWindow(g_page)) return;
+    int selected=-1;
+    __try {
+        selected=*reinterpret_cast<int*>(static_cast<unsigned char*>(g_frame)+0x4cbc);
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return; }
+    const bool active=selected==g_nativeIndex;
+    if (active!=g_lastActive) {
+        Log(active ? L"Native PrintExp navigation selected 3D" :
+                     L"Native PrintExp navigation switched away from 3D");
+        g_lastActive=active;
     }
-    StageLog(L"SUCCESS: embedded 3D child page created on host HWND=" +
-        std::to_wstring(reinterpret_cast<UINT_PTR>(host)) +
-        L"; screen tab visible=" + std::to_wstring(IsWindowVisible(g_tab)));
-    std::wstring signal = L"Local\\UV3D_PageReady_" + std::to_wstring(GetCurrentProcessId());
-    HANDLE event = OpenEventW(EVENT_MODIFY_STATE, FALSE, signal.c_str());
-    if (event) { SetEvent(event); CloseHandle(event); }
-    else StageLog(L"FAILED: OpenEvent page-ready; error=" + std::to_wstring(GetLastError()));
+    if (!active) { ShowWindow(g_page,SW_HIDE); return; }
+    RECT rect={};
+    GetClientRect(g_host,&rect);
+    const int top=76;
+    const int height=rect.bottom-top-46;
+    SetWindowPos(g_page,HWND_TOP,0,top,rect.right>0?rect.right:1,
+        height>0?height:1,SWP_NOACTIVATE|SWP_SHOWWINDOW);
+}
+
+static LRESULT CALLBACK HostSubclass(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp,
+                                     UINT_PTR id,DWORD_PTR ref) {
+    if (msg==WM_NCDESTROY) {
+        KillTimer(hwnd,kTimer);
+        RemoveWindowSubclass(hwnd,HostSubclass,id);
+        g_host=nullptr;g_page=nullptr;g_frame=nullptr;
+        return DefSubclassProc(hwnd,msg,wp,lp);
+    }
+    LRESULT result=DefSubclassProc(hwnd,msg,wp,lp);
+    if (msg==WM_TIMER && wp==kTimer) {
+        if (!g_ready) TryNativePageRegistration();
+        Position3D();
+    } else if (msg==WM_SIZE || msg==WM_WINDOWPOSCHANGED) {
+        Position3D();
+    }
+    return result;
+}
+
+static bool SetupNative3D(HWND host) {
+    if (!IsWindow(host) || GetAncestor(host,GA_ROOT)!=host) return false;
+    DWORD process=0;
+    DWORD thread=GetWindowThreadProcessId(host,&process);
+    if (process!=GetCurrentProcessId() || thread!=GetCurrentThreadId()) return false;
+    WNDCLASSW cls={};
+    cls.hInstance=g_module;
+    cls.lpfnWndProc=PageProc;
+    cls.hCursor=LoadCursorW(nullptr,IDC_ARROW);
+    cls.lpszClassName=kPageClass;
+    if (!RegisterClassW(&cls) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)
+        return false;
+    if (!SetWindowSubclass(host,HostSubclass,kSubclass,0)) return false;
+    g_host=host;
+    g_page=CreateWindowExW(0,kPageClass,L"PrintExp 3D",
+        WS_CHILD|WS_CLIPSIBLINGS|WS_CLIPCHILDREN,
+        0,76,800,600,host,nullptr,g_module,nullptr);
+    if (!g_page) {
+        RemoveWindowSubclass(host,HostSubclass,kSubclass);
+        g_host=nullptr;
+        return false;
+    }
+    // Unlike earlier experiments, no independently painted 3D tab is created.
+    // Its navigation entry must come from PrintExp's own AddPage method.
+    Log(L"Host attached. Waiting for native Vision/page initialization.");
+    SetTimer(host,kTimer,550,nullptr);
+    TryNativePageRegistration();
     return true;
 }
 
 extern "C" __declspec(dllexport) LRESULT CALLBACK UV3D_GetMessageHook(int code,WPARAM wp,LPARAM lp) {
-    // This callback is intentionally limited to UI setup; no machine command path exists.
-    if (code == HC_ACTION && lp && !g_host) {
-        const MSG* msg = reinterpret_cast<const MSG*>(lp);
-        if (msg->message == WM_NULL && msg->hwnd) {
-            Create3DPage(msg->hwnd);
-        }
+    if (code==HC_ACTION && lp && !g_host) {
+        const MSG* msg=reinterpret_cast<const MSG*>(lp);
+        if (msg->message==WM_NULL && msg->hwnd)
+            SetupNative3D(msg->hwnd);
     }
     return CallNextHookEx(nullptr,code,wp,lp);
 }
 
 BOOL WINAPI DllMain(HINSTANCE module,DWORD reason,LPVOID) {
-    if(reason==DLL_PROCESS_ATTACH) {g_module=module;DisableThreadLibraryCalls(module);}
+    if (reason==DLL_PROCESS_ATTACH) {
+        g_module=module;
+        DisableThreadLibraryCalls(module);
+    }
     return TRUE;
 }

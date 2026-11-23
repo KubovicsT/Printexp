@@ -76,34 +76,27 @@ class SingleWindowContractTests(unittest.TestCase):
             self.assertIn(required, launcher)
         self.assertIn("if (!alreadyTriedElevation &&", launcher)
 
-    def test_stage1_targets_exact_message_window_and_owned_overlay(self):
+    def test_uses_the_native_print_exp_page_registry(self):
         page = (ROOT / "src" / "native" / "Stage1Page.cpp").read_text(encoding="utf-8")
         launcher = (ROOT / "src" / "native" / "Stage1Launcher.cpp").read_text(encoding="utf-8")
-        self.assertIn("Create3DPage(msg->hwnd)", page)
-        self.assertIn("msg->message == WM_NULL", page)
-        self.assertIn("WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN", page)
-        self.assertIn("WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS", page)
-        self.assertIn("NativeNavHook", page)
-        self.assertNotIn("WS_POPUP | WS_VISIBLE", page)
+        for keyword in ("NativeAddPage", "TryNativePageRegistration",
+                        "image+0x48530", "image+0x340c0", "image+0x11490",
+                        "mfc100u.dll", "g_nativeIndex", "g_frame",
+                        "native AddPage registered 3D"):
+            self.assertIn(keyword, page)
+        self.assertIn("msg->message==WM_NULL", page)
         self.assertIn("stableSince", launcher)
-        self.assertIn("diagnostics", page)
-        self.assertIn("diagnostics", launcher)
+        self.assertNotIn('kTabClass',page)
+        self.assertNotIn("WS_POPUP",page)
+        self.assertNotIn("WS_CHILD|WS_VISIBLE",page)
 
-    def test_vision_anchor_and_fixed_embedded_tab(self):
+    def test_native_3d_page_only_runs_ui_operations(self):
         page = (ROOT / "src" / "native" / "Stage1Page.cpp").read_text(encoding="utf-8")
-        cfg = (ROOT / "config" / "stage1.ini").read_text(encoding="utf-8")
-        for marker in ("FindVisionControl", "EnumChildWindows",
-                       "SetTimer(g_host", "kRepositionTimer",
-                       "g_fallbackTabX", "WS_CHILD"):
-            self.assertIn(marker, page)
-        self.assertIn("tab_x=-1", cfg)
-        self.assertIn("fallback_tab_x=1348", cfg)
-
-    def test_embedded_native_3d_workspace_switches_on_original_nav_clicks(self):
-        page = (ROOT / "src" / "native" / "Stage1Page.cpp").read_text(encoding="utf-8")
-        for key in ("Deactivate3D", "NativeNavHook", "WH_GETMESSAGE", "WM_LBUTTONDOWN",
-                    "UnhookWindowsHookEx", "g_bottomReserve", "SetWindowPos(g_page"):
-            self.assertIn(key, page)
+        self.assertIn("Printing, Z-axis motion and UV lamp commands are disabled",page)
+        self.assertIn("SetWindowSubclass",page)
+        self.assertIn("PrintExp native AddPage",page)
+        self.assertNotIn("motor_run",page)
+        self.assertNotIn("PrintModule.dll",page)
 
     def test_native_build_can_find_compiler(self):
         text = (ROOT / "Build-Native.cmd").read_text()
