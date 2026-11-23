@@ -142,6 +142,60 @@ using MfcFromHandle = void*(__cdecl*)(HWND);
 using MfcWndCtor = void*(__fastcall*)(void*);
 using MfcWndAttach = int(__fastcall*)(void*,HWND);
 
+// SEH safety boundaries must be isolated: /EHsc forbids __try in C++
+// functions that use std::wstring or other objects requiring unwinding.
+static bool SafeFrameMatches(void* frame, HWND host) {
+    bool hit=false;
+    __try {
+        const auto* bytes=static_cast<const unsigned char*>(frame);
+        for (size_t i=0;i<=0x100;i+=sizeof(void*)) {
+            HWND value=nullptr;
+            std::memcpy(&value,bytes+i,sizeof(value));
+            if (value==host) {hit=true;break;}
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {hit=false;}
+    return hit;
+}
+
+static bool SafeAttachMfc(FARPROC constructor, FARPROC attach, void* storage, HWND hwnd) {
+    bool done=false;
+    __try {
+        reinterpret_cast<MfcWndCtor>(constructor)(storage);
+        done=reinterpret_cast<MfcWndAttach>(attach)(storage,hwnd)!=0;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {done=false;}
+    return done;
+}
+
+static bool SafeFrameState(void* frame, unsigned char* image, int* vision, size_t* count) {
+    bool okay=false;
+    __try {
+        *vision=*reinterpret_cast<int*>(static_cast<unsigned char*>(frame)+0xf76a0);
+        *count=reinterpret_cast<NativeCount>(image+0x340c0)(
+            static_cast<unsigned char*>(frame)+0x4cc0);
+        okay=true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {okay=false;}
+    return okay;
+}
+
+static bool SafePageCount(void* frame, unsigned char* image, size_t* count) {
+    bool okay=false;
+    __try {
+        *count=reinterpret_cast<NativeCount>(image+0x340c0)(
+            static_cast<unsigned char*>(frame)+0x4cc0);
+        okay=true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {okay=false;}
+    return okay;
+}
+
+static bool SafeSelectedIndex(void* frame, int* selected) {
+    bool okay=false;
+    __try {
+        *selected=*reinterpret_cast<int*>(static_cast<unsigned char*>(frame)+0x4cbc);
+        okay=true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {okay=false;}
+    return okay;
+}
+
 static void* FindMainFrame(HWND host) {
     HMODULE mfc = GetModuleHandleW(L"mfc100u.dll");
     if (!mfc) { Log(L"MFC runtime is not loaded"); return nullptr; }
@@ -179,16 +233,7 @@ static void* FindMainFrame(HWND host) {
                     region.State!=MEM_COMMIT ||
                     (region.Protect & PAGE_GUARD) ||
                     (region.Protect & PAGE_NOACCESS)) continue;
-                bool hit=false;
-                __try {
-                    auto* bytes=static_cast<const unsigned char*>(candidate);
-                    for (size_t pos=0;pos<=0x100;pos+=sizeof(void*)) {
-                        HWND candidateHwnd=nullptr;
-                        std::memcpy(&candidateHwnd,bytes+pos,sizeof(candidateHwnd));
-                        if (candidateHwnd==host) {hit=true;break;}
-                    }
-                } __except(EXCEPTION_EXECUTE_HANDLER) {hit=false;}
-                if (hit) {
+                if (SafeFrameMatches(candidate,host)) {
                     frame=candidate;
                     Log(L"Native registration: discovered MFC main frame through "
                         L"PrintExp static-data pointer RVA=" + std::to_wstring(
@@ -204,16 +249,7 @@ static void* FindMainFrame(HWND host) {
         return nullptr;
     }
     // Check that this is the permanent wrapper for the exact selected HWND.
-    bool matches = false;
-    __try {
-        const auto* bytes = static_cast<const unsigned char*>(frame);
-        for (size_t i=0; i<=0x100; i+=sizeof(void*)) {
-            HWND candidate = nullptr;
-            std::memcpy(&candidate, bytes+i, sizeof(candidate));
-            if (candidate==host) { matches=true; break; }
-        }
-    } __except(EXCEPTION_EXECUTE_HANDLER) { matches=false; }
-    if (!matches) {
+    if (!SafeFrameMatches(frame,host)) {
         Log(L"Native registration: MFC frame pointer did not match PrintExp HWND");
         return nullptr;
     }
@@ -233,12 +269,7 @@ static void* BuildOwnMfcWrapper(HWND page) {
     // likewise retained for the lifetime of PrintExp.
     void* storage = VirtualAlloc(nullptr, 4096, MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
     if (!storage) return nullptr;
-    bool attached = false;
-    __try {
-        reinterpret_cast<MfcWndCtor>(init)(storage);
-        attached = reinterpret_cast<MfcWndAttach>(attach)(storage,page)!=0;
-    } __except(EXCEPTION_EXECUTE_HANDLER) { attached=false; }
-    if (!attached) {
+    if (!SafeAttachMfc(init,attach,storage,page)) {
         Log(L"Could not attach MFC CWnd wrapper to the 3D content HWND");
         // Leave memory allocated; an MFC constructor may have partially run.
         return nullptr;
@@ -287,11 +318,7 @@ static bool TryNativePageRegistration() {
     size_t count = 0;
     int visionEnabled = 0;
     void* visionWnd = static_cast<unsigned char*>(frame)+0xf7168;
-    __try {
-        visionEnabled = *reinterpret_cast<int*>(static_cast<unsigned char*>(frame)+0xf76a0);
-        count = reinterpret_cast<NativeCount>(image+0x340c0)(
-            static_cast<unsigned char*>(frame)+0x4cc0);
-    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+    if (!SafeFrameState(frame,image,&visionEnabled,&count)) return false;
     if (!visionEnabled) {
         if (g_attempts==1 || g_attempts==12) Log(L"Waiting for PrintExp to register Vision first...");
         return false;
@@ -315,10 +342,7 @@ static bool TryNativePageRegistration() {
         return false;
     }
     size_t after = 0;
-    __try {
-        after = reinterpret_cast<NativeCount>(image+0x340c0)(
-            static_cast<unsigned char*>(frame)+0x4cc0);
-    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+    if (!SafePageCount(frame,image,&after)) return false;
     if (after != count+1) {
         Log(L"ERROR: native page-list count did not increase as expected");
         return false;
@@ -338,9 +362,7 @@ static bool TryNativePageRegistration() {
 static void Position3D() {
     if (!g_ready || !g_host || !g_page || !IsWindow(g_page)) return;
     int selected=-1;
-    __try {
-        selected=*reinterpret_cast<int*>(static_cast<unsigned char*>(g_frame)+0x4cbc);
-    } __except(EXCEPTION_EXECUTE_HANDLER) { return; }
+    if (!SafeSelectedIndex(g_frame,&selected)) return;
     const bool active=selected==g_nativeIndex;
     if (active!=g_lastActive) {
         Log(active ? L"Native PrintExp navigation selected 3D" :
