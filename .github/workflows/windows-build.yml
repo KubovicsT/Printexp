@@ -1,0 +1,39 @@
+name: Build Windows x64 add-on (main)
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'dist/windows/**'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  native-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Compile native page and launcher
+        shell: cmd
+        run: |
+          if not exist dist\windows mkdir dist\windows
+          cl /nologo /std:c++17 /EHsc /W4 /O2 /LD src\native\Stage1Page.cpp /link /OUT:dist\windows\UV3DPage.dll User32.lib Gdi32.lib Comctl32.lib
+          cl /nologo /std:c++17 /EHsc /W4 /O2 src\native\Stage1Launcher.cpp /link /SUBSYSTEM:WINDOWS /OUT:dist\windows\PrintExp3DLauncher.exe User32.lib Shell32.lib Bcrypt.lib
+      - name: Run portable installer tests
+        shell: pwsh
+        run: python -m unittest discover -s tests -v
+      - name: Commit binaries back to the latest main branch (no releases)
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/windows/UV3DPage.dll dist/windows/PrintExp3DLauncher.exe
+          if ((git diff --cached --name-only).Length -gt 0) {
+            git commit -m "build: refresh native x64 Stage 1 binaries [skip ci]"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          }

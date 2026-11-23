@@ -1,0 +1,12 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+.vs/
+obj/
+*.obj
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.log
+# The GitHub Actions workflow intentionally commits the two compiled x64 binaries.
