@@ -23,7 +23,7 @@ This repository contains a reversible add-on for the **specific** PrintExp insta
 4. Choose the folder containing `PrintExp_X64.exe` and `DeviceManager.dll`.
 5. Click **Install**. The installer clones the latest `main` branch into `PrintExp/UV3DAddOn/` and creates `PrintExp/Start PrintExp with 3D.cmd`.
 6. With the printer idle, use **Launch PrintExp + 3D** in the manager or run `Start PrintExp with 3D.cmd`. You should see a new `3D` tab near the top-right of the PrintExp window. Clicking it opens a Stage 1 test page; clicking again returns to the underlying PrintExp interface.
-7. If the tab overlaps anything, adjust `UV3DAddOn/config/stage1.ini` (`tab_y` and `page_y`), then restart PrintExp using the 3D launcher. UI placement is provisional until verified on your exact screen layout.
+7. If the tab overlaps anything, create `UV3DAddOn/config/local-stage1.ini` with a `[Stage1]` section and your preferred `tab_y` and `page_y` values (copy `config/stage1.ini` as a starting point), then restart PrintExp using the 3D launcher. UI placement is provisional until verified on your exact screen layout.
 
 **Important:** The launcher deliberately uses an **exact host executable checksum** and will not start an unsupported build. Stage 1 works on 64-bit Windows only. The third-party anti-virus or unequal process elevation levels can block Windows message hooking; if this happens, the launcher displays an error and leaves the vendor files untouched. In a failed attach, PrintExp may remain running without the new tab.
 

@@ -32,6 +32,8 @@ static std::wstring ConfigFile() {
         if (idx == std::wstring::npos) return L"";
         dir.erase(idx);
     }
+    const std::wstring local = dir + L"\\config\\local-stage1.ini";
+    if (GetFileAttributesW(local.c_str()) != INVALID_FILE_ATTRIBUTES) return local;
     return dir + L"\\config\\stage1.ini";
 }
 

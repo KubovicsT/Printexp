@@ -10,3 +10,6 @@ obj/
 *.ilk
 *.log
 # The GitHub Actions workflow intentionally commits the two compiled x64 binaries.
+
+# Optional user customization survives Git-main updates.
+/config/local-stage1.ini
