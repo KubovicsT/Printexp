@@ -5,7 +5,9 @@ import argparse
 from pathlib import Path
 import sys
 
-from addon_manager_core import ADDON_DIR, InstallationError, install_or_update, uninstall
+from addon_manager_core import (ADDON_DIR, InstallationError, install_or_update,
+                                uninstall, ensure_not_running)
+from offline_profile import OfflineProfileError, run_offline_action
 
 
 def run_action(action: str, folder: Path, log=print) -> None:
@@ -21,13 +23,16 @@ def run_action(action: str, folder: Path, log=print) -> None:
         log(f"Updated add-on to {commit[:12]}")
     elif action == "uninstall":
         uninstall(folder, log=log)
+    elif action in ("offline-enable", "offline-disable"):
+        ensure_not_running()
+        log(run_offline_action(folder, enabled=(action == "offline-enable")))
     else:
         raise InstallationError(f"Unknown action: {action}")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="PrintExp 3D elevated add-on worker")
-    parser.add_argument("--action", required=True, choices=("install", "update", "uninstall"))
+    parser.add_argument("--action", required=True, choices=("install", "update", "uninstall", "offline-enable", "offline-disable"))
     parser.add_argument("--target", required=True)
     parser.add_argument("--log-file", help="Write progress to the UI worker's operation log")
     args = parser.parse_args(argv)
@@ -42,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         run_action(args.action, Path(args.target).expanduser().resolve(), log=log)
         return 0
-    except (InstallationError, OSError, RuntimeError) as exc:
+    except (InstallationError, OfflineProfileError, OSError, RuntimeError) as exc:
         log(f"ERROR: {exc}")
         return 1
 
