@@ -17,6 +17,19 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+      - name: Validate Windows PowerShell 5.1 installer syntax
+        shell: powershell
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'Bootstrap-Installer.ps1'), [ref]$tokens, [ref]$parseErrors)
+          if ($parseErrors) {
+            $parseErrors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+      - name: Check installer dependencies without opening a GUI
+        shell: powershell
+        run: powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File .\Bootstrap-Installer.ps1 -CheckOnly
       - name: Compile native page and launcher
         shell: cmd
         run: |
