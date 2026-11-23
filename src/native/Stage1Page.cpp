@@ -190,10 +190,10 @@ static LRESULT CALLBACK TabProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             HDC dc = BeginPaint(hwnd, &ps);
             RECT r = {};
             GetClientRect(hwnd, &r);
-            RectPaint(dc, r, g_active ? RGB(42,125,165) : RGB(46,56,69));
+            RectPaint(dc, r, g_active ? RGB(52,52,52) : RGB(96,96,96));
             SetBkMode(dc, TRANSPARENT);
             SetTextColor(dc, RGB(255,255,255));
-            HFONT font = CreateFontW(-17,0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,
+            HFONT font = CreateFontW(-23,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,
                                     DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
             HGDIOBJ old = SelectObject(dc, font);
             DrawTextW(dc,L"3D",-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
@@ -207,84 +207,82 @@ static LRESULT CALLBACK TabProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 static LRESULT CALLBACK PageProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_ERASEBKGND) return 1;
     if (msg == WM_PAINT) {
         PAINTSTRUCT ps = {};
         HDC dc = BeginPaint(hwnd, &ps);
-        RECT r = {}; GetClientRect(hwnd, &r);
-        RectPaint(dc,r,RGB(23,32,43));
-        RECT title = {32,32,r.right-16,85};
+        RECT rect = {};
+        GetClientRect(hwnd, &rect);
+        const int width = rect.right;
+        const int height = rect.bottom;
+        const int sideWidth = width > 900 ? 350 : 270;
+        const int dividerX = width > sideWidth + 250 ? width - sideWidth : width - 250;
+
+        RectPaint(dc, rect, RGB(243,244,246));
+        // Existing PrintExp pages have a gray command strip immediately
+        // beneath their top navigation. The Stage 1 toolbar is read-only.
+        RECT toolbar = {0,0,width,76};
+        RectPaint(dc, toolbar, RGB(97,97,97));
         SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc,RGB(246,249,252));
-        HFONT big = CreateFontW(-29,0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,
-                                DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
-        HGDIOBJ old = SelectObject(dc,big);
-        DrawTextW(dc,L"PrintExp 3D",-1,&title,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
-        SelectObject(dc,old); DeleteObject(big);
-        HFONT regular = CreateFontW(-18,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,
-                                    DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
-        old = SelectObject(dc,regular);
-        RECT note1 = {32,100,r.right-24,165};
-        RECT note2 = {32,168,r.right-24,245};
-        RECT note3 = {32,260,r.right-24,330};
-        SetTextColor(dc,RGB(181,205,220));
-        DrawTextW(dc,L"Stage 1 — native in-process page integration test.",-1,
-                  &note1,DT_LEFT|DT_WORDBREAK);
-        DrawTextW(dc,L"Printing, motors, UV lamps and RIP controls are DISABLED in this test.\n"
-                     L"This view uses no Hoson DLL functions.",-1,
-                  &note2,DT_LEFT|DT_WORDBREAK);
-        SetTextColor(dc,RGB(138,213,237));
-        DrawTextW(dc,L"Click the 3D tab again to return to the original PrintExp page.",-1,
-                  &note3,DT_LEFT|DT_WORDBREAK);
-        SelectObject(dc,old);DeleteObject(regular);
+        HFONT regular = CreateFontW(-19,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,
+            DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
+        HFONT big = CreateFontW(-28,0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,
+            DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
+        HGDIOBJ old = SelectObject(dc, regular);
+        SetTextColor(dc, RGB(236,236,236));
+        const wchar_t* actions[] = {L"Model",L"Slice",L"Supports",L"Gantry",L"Preview"};
+        int x = 34;
+        for (int i=0; i<5; ++i) {
+            RECT area = {x,15,x+120,62};
+            DrawTextW(dc, actions[i], -1, &area, DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+            x += 143;
+        }
+
+        if (width > 400 && height > 180) {
+            RECT canvas = {20,96,dividerX-18,height-18};
+            RectPaint(dc, canvas, RGB(255,255,255));
+            HBRUSH border = CreateSolidBrush(RGB(199,204,208));
+            FrameRect(dc, &canvas, border);
+            DeleteObject(border);
+
+            SelectObject(dc, big);
+            SetTextColor(dc, RGB(47,55,64));
+            RECT title = {canvas.left+28,canvas.top+25,canvas.right-18,canvas.top+72};
+            DrawTextW(dc,L"3D workspace",-1,&title,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+            SelectObject(dc,regular);
+            SetTextColor(dc,RGB(93,105,116));
+            RECT message = {canvas.left+28,canvas.top+100,canvas.right-28,canvas.top+240};
+            DrawTextW(dc,
+                L"Embedded inside PrintExp. This stage tests the navigation and workspace.\\n"
+                L"Model import, slicing, UV curing and motor control are not connected yet.\\n"
+                L"Select Print, Settings, Adjust or Vision to switch to the original pages.",
+                -1,&message,DT_WORDBREAK);
+
+            RECT side = {dividerX,76,width,height};
+            RectPaint(dc,side,RGB(77,77,77));
+            const wchar_t* sections[] = {L"3D job",L"Model",L"Slice settings",L"Supports",
+                                          L"Gantry",L"Simulation"};
+            SetTextColor(dc,RGB(244,244,244));
+            for (int i=0; i<6; ++i) {
+                RECT line = {dividerX+22,96+i*78,width-18,140+i*78};
+                DrawTextW(dc,sections[i],-1,&line,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+                if (i<5) {
+                    HPEN pen = CreatePen(PS_SOLID,1,RGB(112,112,112));
+                    HGDIOBJ savedPen = SelectObject(dc,pen);
+                    MoveToEx(dc,dividerX+20,157+i*78,nullptr);
+                    LineTo(dc,width-18,157+i*78);
+                    SelectObject(dc,savedPen);
+                    DeleteObject(pen);
+                }
+            }
+        }
+        SelectObject(dc,old);
+        DeleteObject(regular);
+        DeleteObject(big);
         EndPaint(hwnd,&ps);
         return 0;
     }
     return DefWindowProcW(hwnd,msg,wp,lp);
-}
-
-
-struct NativeUiProbe {
-    HWND mainFrame;
-    unsigned entries;
-};
-static BOOL CALLBACK NativeUiElement(HWND control, LPARAM arg) {
-    auto* probe = reinterpret_cast<NativeUiProbe*>(arg);
-    if (probe->entries >= 180) return FALSE;
-    RECT rect = {};
-    if (!GetWindowRect(control, &rect)) return TRUE;
-    POINT origin = {rect.left, rect.top};
-    if (!ScreenToClient(probe->mainFrame, &origin)) return TRUE;
-    const int width = rect.right - rect.left;
-    const int height = rect.bottom - rect.top;
-    // Collect the top navigation and large page-container windows.
-    if (!((origin.y >= -20 && origin.y < 180 &&
-           width > 12 && height > 10) ||
-          (width > 450 && height > 250 && origin.y < 300))) return TRUE;
-    wchar_t cls[96] = {};
-    wchar_t label[120] = {};
-    GetClassNameW(control, cls, 96);
-    GetWindowTextW(control, label, 120);
-    HWND parent = GetParent(control);
-    wchar_t parentClass[96] = {};
-    if (parent) GetClassNameW(parent, parentClass, 96);
-    StageLog(L"native-ui: class=" + std::wstring(cls) +
-             L" caption=" + label +
-             L" id=" + std::to_wstring(GetDlgCtrlID(control)) +
-             L" parentClass=" + parentClass +
-             L" x=" + std::to_wstring(origin.x) +
-             L" y=" + std::to_wstring(origin.y) +
-             L" w=" + std::to_wstring(width) +
-             L" h=" + std::to_wstring(height) +
-             L" visible=" + std::to_wstring(IsWindowVisible(control) ? 1 : 0));
-    ++probe->entries;
-    return TRUE;
-}
-static void DumpNativeUi(const wchar_t* reason) {
-    if (!g_host || !IsWindow(g_host)) return;
-    StageLog(L"---- Native PrintExp UI inspection: " + std::wstring(reason) + L" ----");
-    NativeUiProbe probe = {g_host, 0};
-    EnumChildWindows(g_host, NativeUiElement, reinterpret_cast<LPARAM>(&probe));
-    StageLog(L"---- Native UI elements logged: " + std::to_wstring(probe.entries) + L" ----");
 }
 
 static void Position() {
