@@ -639,23 +639,70 @@ function Read-ProjectMode([string]$InstallFolder) {
 }
 
 function Test-SimulationProfile([string]$InstallFolder) {
+    if ([string]::IsNullOrWhiteSpace($InstallFolder)) { return $false }
     $config = Join-Path $InstallFolder 'Project.ini'
     if (-not (Test-Path -LiteralPath $config -PathType Leaf)) { return $false }
     try {
         $data = [IO.File]::ReadAllText($config, [Text.Encoding]::Default)
-        return ($data -match '(?im)^[ \t]*PROJECT_MODE[ \t]*=[ \t]*1[ \t]*
+        $mode = [regex]::IsMatch($data, '(?im)^[ \t]*PROJECT_MODE[ \t]*=[ \t]*1[ \t]*$')
+        $ipCount = [regex]::Matches($data,
+            '(?im)^[ \t]*ServerIP[ \t]*=[ \t]*127\.0\.0\.1[ \t]*$').Count
+        return ($mode -and $ipCount -ge 2)
+    } catch { return $false }
+}
+
+function Start-SimulatedPrintExp([string]$InstallFolder) {
+    if (-not (Test-SimulationProfile $InstallFolder)) {
+        throw 'Simulation requires the redirected Project.ini. Approve UAC setup first.'
+    }
     if (-not (Test-VC2010X64Runtime $InstallFolder)) {
         $decision = [System.Windows.Forms.MessageBox]::Show(
-            "PrintExp_X64.exe requires Microsoft Visual C++ 2010 SP1 x64 (mfc100u.dll), which is missing." +
-            [Environment]::NewLine + [Environment]::NewLine +
-            "Download and install this free Microsoft runtime now?" +
+            'PrintExp requires Microsoft Visual C++ 2010 SP1 x64. Install this free runtime?',
+            'Microsoft runtime required', 'YesNo', 'Question')
+        if ($decision -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+        Begin-Modification 'vc2010-install'
+        return
+    }
+    Refresh-Status
+    if (-not $script:Python) {
+        throw 'Python is required for the virtual controller. Use Update from main to install dependencies.'
+    }
+    $virtual = Join-Path $InstallFolder 'UV3DAddOn\simulated_controller.py'
+    $launcher = Join-Path $InstallFolder 'UV3DAddOn\dist\windows\PrintExp3DLauncher.exe'
+    $hostExe = Join-Path $InstallFolder 'PrintExp_X64.exe'
+    $log = Join-Path $InstallFolder 'UV3DAddOn\diagnostics\simulated-controller.ndjson'
+    foreach ($required in @($virtual,$launcher,$hostExe)) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+            throw "Simulation file missing: $required. Run Update from main."
+        }
+    }
+    $logDir = Split-Path -Parent $log
+    $needsElevation = $false
+    try {
+        [IO.Directory]::CreateDirectory($logDir) | Out-Null
+        $probe = Join-Path $logDir ('.uv3d-test-' + [guid]::NewGuid().ToString('N'))
+        [IO.File]::WriteAllText($probe, '')
+        [IO.File]::Delete($probe)
+    } catch { $needsElevation = $true }
+    $args = ('"{0}" --log "{1}" --launcher "{2}" --host "{3}"' -f
+             $virtual,$log,$launcher,$hostExe)
+    if ($needsElevation) {
+        Start-Process -FilePath $script:Python -ArgumentList $args -Verb RunAs -WindowStyle Hidden -ErrorAction Stop
+    } else {
+        Start-Process -FilePath $script:Python -ArgumentList $args -WorkingDirectory $InstallFolder -WindowStyle Hidden -ErrorAction Stop
+    }
+    $script:StatusLabel.Text = 'Loopback controller started (TCP/UDP 127.0.0.1:5001). Hardware replies not yet verified.'
+}
+
+function Start-NativePrintExp([string]$InstallFolder, [switch]$NoAddon) {
+    if (-not (Test-VC2010X64Runtime $InstallFolder)) {
+        $decision = [System.Windows.Forms.MessageBox]::Show(
+            "PrintExp_X64.exe requires Visual C++ 2010 SP1 x64 (mfc100u.dll), which is missing." +
             [Environment]::NewLine +
-            "This system dependency is installed by Microsoft into Windows, outside the PrintExp folder." +
-            [Environment]::NewLine +
-            "Windows will request administrator approval.",
+            "Download and install this free Microsoft runtime now?",
             'PrintExp 3D: Required Microsoft Runtime', 'YesNo', 'Question')
         if ($decision -ne [System.Windows.Forms.DialogResult]::Yes) {
-            throw 'Cannot start PrintExp until the required Visual C++ 2010 x64 runtime is installed.'
+            throw 'Cannot start PrintExp until the 2010 x64 runtime is installed.'
         }
         Begin-Modification 'vc2010-install'
         return
@@ -663,20 +710,17 @@ function Test-SimulationProfile([string]$InstallFolder) {
     $native = Join-Path $InstallFolder 'UV3DAddOn\dist\windows\PrintExp3DLauncher.exe'
     $hostExe = Join-Path $InstallFolder 'PrintExp_X64.exe'
     if ($NoAddon) {
-        # Baseline check: the original vendor program without DLL injection.
-        # Hold Shift while clicking Launch PrintExp + 3D. This isolates
-        # missing dependencies / printer startup from our experimental hook.
         Start-Process -FilePath $hostExe -WorkingDirectory $InstallFolder -ErrorAction Stop
-        $script:StatusLabel.Text = 'Launching original PrintExp without 3D (Shift+Launch baseline test).'
+        $script:StatusLabel.Text = 'Launching original PrintExp without 3D (Shift+Launch).'
         return
     }
     if (-not (Test-Path -LiteralPath $native -PathType Leaf)) {
-        throw 'The 3D launcher is missing; run Install Add-on or Update from main first.'
+        throw 'The 3D launcher is missing; use Update from main.'
     }
     Start-Process -FilePath $native -ArgumentList ('"{0}"' -f $hostExe) -WorkingDirectory $InstallFolder -ErrorAction Stop
     $mode = Read-ProjectMode $InstallFolder
     $script:StatusLabel.Text = if ($mode -eq 1) {
-        'Starting PrintExp in offline development mode (printer commands disabled in 3D).'
+        'Starting PrintExp in offline development mode.'
     } else {
         'Starting PrintExp using the normal online configuration.'
     }
