@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import shutil
 import subprocess
 import tempfile
@@ -111,6 +112,16 @@ def ensure_binaries(checkout: Path, log: Log = print) -> None:
         raise InstallationError("Native build did not produce: " + ", ".join(remaining))
 
 
+def remove_managed_directory(path: Path) -> None:
+    """Remove managed checkout, handling read-only Git objects on Windows."""
+    def retry_readonly(remove_func, entry, failure):
+        error = failure[1]
+        if not isinstance(error, PermissionError):
+            raise error
+        os.chmod(entry, stat.S_IWRITE | stat.S_IREAD)
+        remove_func(entry)
+    shutil.rmtree(path, onerror=retry_readonly)
+
 def source_marker(target: Path) -> Path:
     return target / ADDON_DIR / MARKER_NAME
 
@@ -179,7 +190,7 @@ def install_or_update(target: Path, log: Log = print, repo_url: str = REPOSITORY
         source_marker(target).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     except Exception:
         entry.unlink(missing_ok=True)
-        shutil.rmtree(addon)
+        remove_managed_directory(addon)
         raise
     log(f"Installed {commit[:12]}. Original PrintExp files remain untouched.")
     return commit
@@ -195,6 +206,6 @@ def uninstall(target: Path, log: Log = print) -> None:
         raise InstallationError("Launch script missing or edited. Aborting uninstall; no files removed.")
     # Only our new directory and our own launcher are removed. Vendor files are never modified.
     # The managed directory is intentionally reserved for source and binaries, not user projects.
-    shutil.rmtree(addon)
+    remove_managed_directory(addon)
     entry.unlink()
     log("Removed all add-on files. Original PrintExp files are unchanged.")
