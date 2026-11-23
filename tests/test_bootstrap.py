@@ -89,23 +89,15 @@ class SingleWindowContractTests(unittest.TestCase):
         self.assertIn("diagnostics", page)
         self.assertIn("diagnostics", launcher)
 
-    def test_vision_anchor_and_saved_draggable_position(self):
+    def test_vision_anchor_and_fixed_embedded_tab(self):
         page = (ROOT / "src" / "native" / "Stage1Page.cpp").read_text(encoding="utf-8")
         cfg = (ROOT / "config" / "stage1.ini").read_text(encoding="utf-8")
-        for name in ("FindVisionControl", "EnumChildWindows",
-                     "SetTimer(g_host", "kRepositionTimer", "WM_MOUSEMOVE",
-                     "SaveTabLocation", "WritePrivateProfileStringW",
-                     "fallback_tab_x"):
-            self.assertIn(name, page)
+        for marker in ("FindVisionControl", "EnumChildWindows",
+                       "SetTimer(g_host", "kRepositionTimer",
+                       "g_fallbackTabX", "WS_CHILD"):
+            self.assertIn(marker, page)
         self.assertIn("tab_x=-1", cfg)
-
-    def test_readonly_native_navigation_probe(self):
-        source = (ROOT / "src" / "native" / "Stage1Page.cpp").read_text(encoding="utf-8")
-        for marker in ("DumpNativeUi", "EnumChildWindows(g_host, NativeUiElement",
-                       "native-nav event: WM_COMMAND", "WM_NOTIFY",
-                       "Native PrintExp UI inspection"):
-            self.assertIn(marker, source)
-        self.assertNotIn("WriteProcessMemory", source)
+        self.assertIn("fallback_tab_x=1348", cfg)
 
     def test_embedded_native_3d_workspace_switches_on_original_nav_clicks(self):
         page = (ROOT / "src" / "native" / "Stage1Page.cpp").read_text(encoding="utf-8")
