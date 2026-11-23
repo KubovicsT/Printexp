@@ -69,6 +69,13 @@ class SingleWindowContractTests(unittest.TestCase):
         self.assertIn("Get-FileHash -LiteralPath $path", ui)
         self.assertIn("verify_installed_files(target, staged, commit, expected_sha, log=log)", core)
 
+    def test_stage1_launcher_requests_elevation_for_protected_printexp(self):
+        launcher = (ROOT / "src" / "native" / "Stage1Launcher.cpp").read_text(encoding="utf-8")
+        for required in ("ERROR_ELEVATION_REQUIRED", "ERROR_ACCESS_DENIED", "ShellExecuteExW",
+                         'info.lpVerb = L"runas"', "--elevated", "alreadyTriedElevation"):
+            self.assertIn(required, launcher)
+        self.assertIn("if (!alreadyTriedElevation &&", launcher)
+
     def test_native_build_can_find_compiler(self):
         text = (ROOT / "Build-Native.cmd").read_text()
         self.assertIn("vswhere.exe", text)

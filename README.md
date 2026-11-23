@@ -12,7 +12,7 @@ There is just one user-facing management window:
 - **Install Add-on** — fetches `main` (no GitHub releases), installs any missing Python/Git/C++ Build Tools, builds native binaries when needed and installs only our add-on files.
 - **Update from main** — downloads the latest `main` into a temporary workspace, creates a replacement add-on directory with normal PrintExp-inherited permissions, and swaps it in with rollback protection. This also repairs the older installer version that retained administrator-only permissions.
 - **Uninstall Add-on** — removes only the managed add-on folder and checksum-verified launcher.
-- **Launch PrintExp + 3D** — runs the Stage 1 experimental page; does not require administrator permission.
+- **Launch PrintExp + 3D** — runs the Stage 1 experimental page. If Windows requires elevation for PrintExp, the native launcher requests UAC approval and relaunches itself elevated before attempting the UI hook.
 
 **Install, Update and Uninstall always display the standard Windows UAC administrator prompt, before any PrintExp modification.** The original manager window stays open; the elevated worker runs with its console hidden, and reports completion in that window. If permission is denied, no change is attempted. The manager retains the last selected folder between runs. The operation log is saved to `%LOCALAPPDATA%\PrintExp3DAddOn\last-operation.log`.
 
@@ -30,7 +30,7 @@ The installer now **copies** the checkout into a newly created folder under Prin
 
 To recover from the old build: close PrintExp, download the current installer ZIP, open `Start-Installer.vbs`, and click **Update from main**. If update still fails, the existing managed directory is left in place. The status message and `%LOCALAPPDATA%\PrintExp3DAddOn\last-operation.log` can be used to identify where Windows denied access. Do not change global Windows security settings or disable antivirus protections to make an injected tab work.
 
-If the native launcher can start but Windows refuses the experimental page hook, it now reports a **Win32 error code**. That problem is separate from filesystem permissions and may require using a supported Hoson interface instead.
+If PrintExp refuses to start because of elevation, the native launcher requests administrator approval through standard Windows UAC, then starts PrintExp and its UI hook with matching permissions. The original PrintExp binary contains `requestedExecutionLevel level="highestAvailable"`. If process launch or hooking still fails after UAC, the launcher reports the actual **Win32 error code**. Do not disable Windows security protections to force the hook.
 
 ## Supported PrintExp version and safety
 

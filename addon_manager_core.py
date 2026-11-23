@@ -77,6 +77,11 @@ def ensure_not_running() -> None:
         raise InstallationError("Close PrintExp completely before installing, updating or uninstalling.")
 
 
+def write_launcher_bytes(path: Path, content: bytes) -> None:
+    """Write only the managed launcher; replaceable in transaction tests."""
+    path.write_bytes(content)
+
+
 def launcher_text() -> str:
     return ('@echo off\r\n'
             'setlocal\r\n'
@@ -261,7 +266,7 @@ def install_or_update(target: Path, log: Log = print, repo_url: str = REPOSITORY
                 backed_up = True
                 candidate.rename(addon)
                 installed_candidate = True
-                entry.write_bytes(new_launcher)
+                write_launcher_bytes(entry, new_launcher)
                 verify_installed_files(target, staged, commit, expected_sha, log=log)
             except Exception as exc:
                 if installed_candidate and addon.exists():
@@ -269,7 +274,7 @@ def install_or_update(target: Path, log: Log = print, repo_url: str = REPOSITORY
                 if backed_up and backup.exists():
                     backup.rename(addon)
                 if previous_launcher is not None and entry.exists():
-                    entry.write_bytes(previous_launcher)
+                    write_launcher_bytes(entry, previous_launcher)
                 raise InstallationError(f"Update failed; previous version restored: {exc}") from exc
             finally:
                 if candidate.exists():
@@ -290,7 +295,7 @@ def install_or_update(target: Path, log: Log = print, repo_url: str = REPOSITORY
             # Denied when the standard user launches the installed EXE.
             shutil.copytree(staged, addon)
             _verify_package(addon, staged)
-            entry.write_bytes(launcher_text().encode("utf-8"))
+            write_launcher_bytes(entry, launcher_text().encode("utf-8"))
             data = {"format": MARKER_VALUE, "repo": REPOSITORY, "commit": commit,
                     "host_exe_sha256": expected_sha, "launcher_sha256": sha256(entry)}
             source_marker(target).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")

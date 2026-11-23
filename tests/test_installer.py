@@ -88,15 +88,15 @@ class ManagerTests(unittest.TestCase):
         original_head = subprocess.check_output(
             ["git", "-C", str(self.vendor / ADDON_DIR), "rev-parse", "HEAD"], text=True
         ).strip()
-        original_write = Path.write_bytes
+        from addon_manager_core import write_launcher_bytes
         failed_once = False
         def fail_at_final_launcher_write(path, data):
             nonlocal failed_once
             if path == self.vendor / LAUNCHER_NAME and not failed_once:
                 failed_once = True
                 raise PermissionError("simulated blocked launcher write")
-            return original_write(path, data)
-        with patch.object(Path, "write_bytes", new=fail_at_final_launcher_write):
+            return write_launcher_bytes(path, data)
+        with patch("addon_manager_core.write_launcher_bytes", side_effect=fail_at_final_launcher_write):
             with self.assertRaises(InstallationError):
                 self.run_install()
         self.assertTrue(failed_once)

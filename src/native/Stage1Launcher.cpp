@@ -80,6 +80,34 @@ static std::wstring FileSha256(const std::wstring& path) {
     return answer;
 }
 
+
+static bool RelaunchAsAdministrator(const std::wstring& launcherPath,
+                                    const std::wstring& printExpPath) {
+    // PrintExp's embedded manifest requests highestAvailable. CreateProcess
+    // cannot display a UAC dialog, but ShellExecuteEx with "runas" can.
+    std::wstring arguments = L"\"" + printExpPath + L"\" --elevated";
+    std::wstring workingDir = Folder(launcherPath);
+    SHELLEXECUTEINFOW info = {};
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_NOCLOSEPROCESS;
+    info.lpVerb = L"runas";
+    info.lpFile = launcherPath.c_str();
+    info.lpParameters = arguments.c_str();
+    info.lpDirectory = workingDir.c_str();
+    info.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&info)) {
+        const DWORD code = GetLastError();
+        if (code == ERROR_CANCELLED) {
+            Error(L"Administrator approval was cancelled. PrintExp was not started.");
+        } else {
+            ErrorWin32(L"Windows could not elevate the PrintExp 3D launcher.", code);
+        }
+        return false;
+    }
+    if (info.hProcess) CloseHandle(info.hProcess);
+    return true;
+}
+
 struct FindData { DWORD pid; HWND hwnd; DWORD tid; };
 static BOOL CALLBACK FindPrintExp(HWND w,LPARAM lp) {
     FindData* f=reinterpret_cast<FindData*>(lp);
@@ -93,11 +121,13 @@ static BOOL CALLBACK FindPrintExp(HWND w,LPARAM lp) {
 int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
     int argc=0;
     LPWSTR* args=CommandLineToArgvW(GetCommandLineW(),&argc);
-    if(!args || argc!=2) {
+    if (!args || (argc!=2 && argc!=3) ||
+        (argc==3 && std::wstring(args[2])!=L"--elevated")) {
         Error(L"This launcher requires the absolute path of PrintExp_X64.exe.");
         if(args)LocalFree(args);
         return 2;
     }
+    const bool alreadyTriedElevation = (argc==3);
     std::wstring executable=args[1];LocalFree(args);
     if(FileSha256(executable)!=kSupportedSha) {
         Error(L"This PrintExp_X64.exe does not match the exact inspected build.\n"
@@ -119,8 +149,18 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
     if(!CreateProcessW(executable.c_str(),cmd.data(),nullptr,nullptr,FALSE,0,nullptr,
                        working.c_str(),&startup,&pi)) {
         const DWORD code = GetLastError();
+        FreeLibrary(localDll);
+        // The original PrintExp executable has level="highestAvailable".
+        // Relaunch THIS loader elevated as well as the host, so that the
+        // subsequent UI hook runs at the host's Windows integrity level.
+        // Also handle access denied from an unelevated CreateProcess once;
+        // persistent access denied is reported rather than bypassed.
+        if (!alreadyTriedElevation &&
+            (code == ERROR_ELEVATION_REQUIRED || code == ERROR_ACCESS_DENIED)) {
+            return RelaunchAsAdministrator(own, executable) ? 0 : 11;
+        }
         ErrorWin32(L"Could not start PrintExp. Check its permissions and elevation requirements.", code);
-        FreeLibrary(localDll);return 7;
+        return 7;
     }
     WaitForInputIdle(pi.hProcess,15000);
     FindData f={pi.dwProcessId,nullptr,0};
