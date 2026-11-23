@@ -285,7 +285,7 @@ function Ensure-CompilerIfNeeded([string]$Action, [string]$InstallFolder) {
 
 function Run-ElevatedAction([string]$Action, [string]$InstallFolder) {
     if (-not (Test-Administrator)) { throw 'Administrator permission is required for Install, Update and Uninstall.' }
-    if ($Action -notin @('install','update','uninstall')) { throw 'Unsupported modification action.' }
+    if ($Action -notin @('install','update','uninstall','offline-enable','offline-disable')) { throw 'Unsupported modification action.' }
     if (-not (Test-Path -LiteralPath (Join-Path $InstallFolder 'PrintExp_X64.exe'))) {
         throw 'Select the folder that contains PrintExp_X64.exe.'
     }
@@ -295,9 +295,13 @@ function Run-ElevatedAction([string]$Action, [string]$InstallFolder) {
     if ($Action -eq 'update' -and -not (Test-Path -LiteralPath (Join-Path $InstallFolder 'UV3DAddOn\.uv3d-managed-install.json'))) {
         throw 'No managed add-on is installed. Use Install Add-on first.'
     }
-    # Uninstall needs only Python and does not install Git or a compiler.
+    if ($Action -in @('offline-enable','offline-disable') -and
+        -not (Test-Path -LiteralPath (Join-Path $InstallFolder 'UV3DAddOn\.uv3d-managed-install.json'))) {
+        throw 'Install the add-on before enabling offline development mode.'
+    }
+    # Offline configuration and uninstall require Python only.
     Ensure-Python
-    if ($Action -ne 'uninstall') {
+    if ($Action -in @('install','update')) {
         Ensure-Git
         Ensure-CompilerIfNeeded $Action $InstallFolder
     }
@@ -484,6 +488,13 @@ function Finish-Modification {
     }
     $icon = if ($success) {'Information'} else {'Error'}
     [System.Windows.Forms.MessageBox]::Show($message, 'PrintExp 3D', 'OK', $icon) | Out-Null
+    if ($success -and $script:CurrentAction -eq 'offline-enable') {
+        try { Start-NativePrintExp $script:OperationFolder }
+        catch {
+            $script:StatusLabel.Text = $_.Exception.Message
+            [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'PrintExp 3D', 'OK', 'Error') | Out-Null
+        }
+    }
 }
 
 $form = New-Object System.Windows.Forms.Form
@@ -556,6 +567,37 @@ $script:UninstallButton.Size = New-Object System.Drawing.Size(158,39)
 $form.Controls.Add($script:UninstallButton)
 $script:UninstallButton.Add_Click({ Begin-Modification 'uninstall' })
 
+function Read-ProjectMode([string]$InstallFolder) {
+    $config = Join-Path $InstallFolder 'Project.ini'
+    if (-not (Test-Path -LiteralPath $config -PathType Leaf)) {
+        throw 'Project.ini is missing from the selected PrintExp installation.'
+    }
+    # The file may contain GBK-encoded Chinese comments; the ASCII key and
+    # value are safe to inspect without changing its original bytes.
+    $raw = [IO.File]::ReadAllText($config, [Text.Encoding]::Default)
+    $section = [regex]::Match($raw, '(?ims)^\s*\[PROJECT_CONFIG\]\s*(.*?)(?=^\s*\[|\z)')
+    if (-not $section.Success) { throw 'Project.ini has no [PROJECT_CONFIG] section.' }
+    $mode = [regex]::Match($section.Groups[1].Value,
+        '(?im)^[ \t]*PROJECT_MODE[ \t]*=[ \t]*([01])(?=$|[ \t;#])')
+    if (-not $mode.Success) { throw 'Project.ini has no PROJECT_MODE=0/1 setting.' }
+    return [int]$mode.Groups[1].Value
+}
+
+function Start-NativePrintExp([string]$InstallFolder) {
+    $native = Join-Path $InstallFolder 'UV3DAddOn\dist\windows\PrintExp3DLauncher.exe'
+    $hostExe = Join-Path $InstallFolder 'PrintExp_X64.exe'
+    if (-not (Test-Path -LiteralPath $native -PathType Leaf)) {
+        throw 'The 3D launcher is missing; run Install Add-on or Update from main first.'
+    }
+    Start-Process -FilePath $native -ArgumentList ('"{0}"' -f $hostExe) -WorkingDirectory $InstallFolder -ErrorAction Stop
+    $mode = Read-ProjectMode $InstallFolder
+    $script:StatusLabel.Text = if ($mode -eq 1) {
+        'Starting PrintExp in offline development mode (printer commands disabled in 3D).'
+    } else {
+        'Starting PrintExp using the normal online configuration.'
+    }
+}
+
 $script:LaunchButton = New-Object System.Windows.Forms.Button
 $script:LaunchButton.Text = 'Launch PrintExp + 3D'
 $script:LaunchButton.Location = New-Object System.Drawing.Point(521,137)
@@ -567,15 +609,26 @@ $script:LaunchButton.Add_Click({
         $folder = Get-SelectedFolder
         $launcher = Join-Path $folder 'Start PrintExp with 3D.cmd'
         if (-not (Test-Path -LiteralPath $launcher)) { throw 'The 3D add-on is not installed. Click Install Add-on first.' }
-        $native = Join-Path $folder 'UV3DAddOn\dist\windows\PrintExp3DLauncher.exe'
-        $hostExe = Join-Path $folder 'PrintExp_X64.exe'
-        if (-not (Test-Path -LiteralPath $native)) {
-            throw 'The native add-on launcher cannot be accessed. An earlier installation may have inherited administrator-only permissions. Click Update from main to repair the add-on.'
+        $mode = Read-ProjectMode $folder
+        if ($mode -eq 0) {
+            $decision = [System.Windows.Forms.MessageBox]::Show(
+                'This PrintExp installation is configured for ONLINE operation.' +
+                [Environment]::NewLine + [Environment]::NewLine +
+                'Is this a development computer without the printer?' +
+                [Environment]::NewLine +
+                'YES: enable PrintExp debug mode (PROJECT_MODE=1) with a verified in-folder backup and UAC approval.' +
+                [Environment]::NewLine +
+                'NO: launch normally without changing settings.' +
+                [Environment]::NewLine +
+                'CANCEL: do not launch.',
+                'PrintExp 3D: Offline Development', 'YesNoCancel', 'Question')
+            if ($decision -eq [System.Windows.Forms.DialogResult]::Cancel) { return }
+            if ($decision -eq [System.Windows.Forms.DialogResult]::Yes) {
+                Begin-Modification 'offline-enable'
+                return
+            }
         }
-        # Launch the native file directly to catch Win32 error 5 locally.
-        # The old CMD wrapper only displayed the generic "Access is denied".
-        Start-Process -FilePath $native -ArgumentList ('"{0}"' -f $hostExe) -WorkingDirectory $folder -ErrorAction Stop
-        $script:StatusLabel.Text = 'Starting PrintExp with the experimental 3D page...'
+        Start-NativePrintExp $folder
     } catch {
         $details = $_.Exception.Message
         if ($_.Exception -is [System.ComponentModel.Win32Exception] -and $_.Exception.NativeErrorCode -eq 5) {
