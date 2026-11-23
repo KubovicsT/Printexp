@@ -192,3 +192,40 @@ lookup, Vision readiness, or native registration was the blocker.
 
 No printer or motor functions are called. Use only on your isolated test
 installation with the printer idle or disconnected.
+
+
+## Offline development mode (no printer attached)
+
+The original Gongzheng `Project.ini` documents `[PROJECT_CONFIG] PROJECT_MODE=0`
+as **online** and `PROJECT_MODE=1` as **debug**. The executable itself reads
+this setting. We do not spoof a printer, send commands to its controller, or
+claim a connected machine when using debug mode.
+
+The installer keeps a single main window and four buttons. When you click
+**Launch PrintExp + 3D** with `PROJECT_MODE=0`, you are asked whether this
+is a printer-free development computer. Choose **Yes** to enable the
+manufacturer's debug setting and launch. Windows requests UAC because it is
+changing a file inside the selected PrintExp installation. Choose **No** to
+start with the ordinary online setting, or **Cancel** to abort.
+
+`offline_profile.py` changes only the ASCII digit in
+`<selected PrintExp>/Project.ini`, preserving all original encoding and
+comments (including GBK Chinese text). It stores an SHA-verified byte-for-byte
+backup in `<selected PrintExp>/UV3DAddOn/.host-patches/` and records the
+transaction. This backup is **preserved across Update from main** and
+restored during **Uninstall Add-on**. If the file changes unexpectedly,
+the add-on refuses to overwrite it.
+
+**Important:** `PROJECT_MODE=1` is a documented *debug* setting, not
+a proven complete printer simulator. Depending on vendor startup logic,
+some PrintExp pages or device functions may remain unavailable. The 3D
+module no longer depends on Vision being registered or uses Vision's
+CWnd as a fallback. It requires its own MFC wrapper to register safely.
+If PrintExp exits or registration fails, the launcher now reports the actual
+host-exit status and records details in
+`UV3DAddOn/diagnostics/native-page.log` and `stage1.log`.
+
+For a printer-connected copy, choose **No** and keep online mode. The
+offline mode remains active for the selected test installation until you
+restore its original configuration through **Uninstall Add-on**. A printer
+must remain disconnected during experimental native-page development.
