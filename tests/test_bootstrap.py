@@ -77,6 +77,20 @@ class SingleWindowContractTests(unittest.TestCase):
         self.assertIn("Get-FileHash -LiteralPath $path", ui)
         self.assertIn("verify_installed_files(target, staged, commit, expected_sha, log=log)", core)
 
+    def test_offline_mode_is_reversible_and_does_not_depend_on_vision(self):
+        script = (ROOT / "offline_profile.py").read_text(encoding="utf-8")
+        ui = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
+        page = (ROOT / "src" / "native" / "Stage1Page.cpp").read_text(encoding="utf-8")
+        action = (ROOT / "addon_action.py").read_text(encoding="utf-8")
+        for token in ("PROJECT_MODE", "apply_host_patch", "restore_host_patches"):
+            self.assertIn(token,script)
+        self.assertIn("offline-enable", ui)
+        self.assertIn("Begin-Modification 'offline-enable'", ui)
+        self.assertIn("offline-disable", action)
+        self.assertIn("SafePageCount(frame,image,&count)", page)
+        self.assertNotIn("Waiting for PrintExp to register Vision first", page)
+        self.assertNotIn("nativePage = visionWnd", page)
+
     def test_stage1_launcher_requests_elevation_for_protected_printexp(self):
         launcher = (ROOT / "src" / "native" / "Stage1Launcher.cpp").read_text(encoding="utf-8")
         for required in ("ERROR_ELEVATION_REQUIRED", "ERROR_ACCESS_DENIED", "ShellExecuteExW",
