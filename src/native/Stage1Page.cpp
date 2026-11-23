@@ -253,8 +253,8 @@ static LRESULT CALLBACK PageProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetTextColor(dc,RGB(93,105,116));
             RECT message = {canvas.left+28,canvas.top+100,canvas.right-28,canvas.top+240};
             DrawTextW(dc,
-                L"Embedded inside PrintExp. This stage tests the navigation and workspace.\\n"
-                L"Model import, slicing, UV curing and motor control are not connected yet.\\n"
+                L"Embedded inside PrintExp. This stage tests the navigation and workspace.\n"
+                L"Model import, slicing, UV curing and motor control are not connected yet.\n"
                 L"Select Print, Settings, Adjust or Vision to switch to the original pages.",
                 -1,&message,DT_WORDBREAK);
 
