@@ -132,8 +132,8 @@ class Installer(tk.Tk):
                 if messagebox.askyesno(
                     "Administrator permission required",
                     "Windows protects this PrintExp folder. To " + action
-                    + " the add-on, Windows must authorize writing files there.\\n\\n"
-                    "The original PrintExp executable and vendor DLLs will not be modified.\\n\\n"
+                    + " the add-on, Windows must authorize writing files there.\n\n"
+                    "The original PrintExp executable and vendor DLLs will not be modified.\n\n"
                     "Open the add-on manager with administrator permissions?"
                 ):
                     request_elevated_manager(action, folder)
