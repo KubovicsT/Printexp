@@ -30,9 +30,9 @@ echo Install free Visual Studio 2022 Build Tools with Desktop Development with C
 exit /b 1
 :compile
 if not exist "dist\windows" mkdir "dist\windows"
-cl /nologo /std:c++17 /DUNICODE /D_UNICODE /EHsc /W4 /O2 /LD "src\native\Stage1Page.cpp" /link /OUT:"dist\windows\UV3DPage.dll" User32.lib Gdi32.lib Comctl32.lib
+cl /utf-8 /nologo /std:c++17 /DUNICODE /D_UNICODE /EHsc /W4 /O2 /LD "src\native\Stage1Page.cpp" /link /OUT:"dist\windows\UV3DPage.dll" User32.lib Gdi32.lib Comctl32.lib
 if errorlevel 1 exit /b 2
-cl /nologo /std:c++17 /DUNICODE /D_UNICODE /EHsc /W4 /O2 "src\native\Stage1Launcher.cpp" /link /SUBSYSTEM:WINDOWS /OUT:"dist\windows\PrintExp3DLauncher.exe" User32.lib Shell32.lib Bcrypt.lib
+cl /utf-8 /nologo /std:c++17 /DUNICODE /D_UNICODE /EHsc /W4 /O2 "src\native\Stage1Launcher.cpp" /link /SUBSYSTEM:WINDOWS /OUT:"dist\windows\PrintExp3DLauncher.exe" User32.lib Shell32.lib Bcrypt.lib
 if errorlevel 1 exit /b 3
 echo Native Windows x64 3D page successfully built.
 exit /b 0
