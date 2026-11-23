@@ -1,6 +1,9 @@
 // Stage 1: purely visual in-process page. Does not load/call PrintExp printer APIs.
 // The DLL is loaded only by a targeted WH_GETMESSAGE hook for an exact, SHA-pinned build.
 #define WIN32_LEAN_AND_MEAN
+#if !defined(_WIN64)
+#error "PrintExp 3D Stage 1 must be compiled for Windows x64."
+#endif
 #include <windows.h>
 #include <commctrl.h>
 #include <string>

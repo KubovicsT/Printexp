@@ -1,5 +1,8 @@
 // Targeted x64 WH_GETMESSAGE hook launcher. The vendor PrintExp binary is never patched.
 #define WIN32_LEAN_AND_MEAN
+#if !defined(_WIN64)
+#error "PrintExp 3D Stage 1 must be compiled for Windows x64."
+#endif
 #include <windows.h>
 #include <bcrypt.h>
 #include <shellapi.h>
