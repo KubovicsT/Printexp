@@ -540,17 +540,17 @@ function Finish-Modification {
     if ($success -and $script:CurrentAction -in @('install','update')) {
         $latest = Join-Path $script:OperationFolder 'UV3DAddOn\Start-Installer.vbs'
         if (Test-Path -LiteralPath $latest -PathType Leaf) {
-            $currentRoot = [IO.Path]::GetFullPath($script:Root).TrimEnd('\')
             $latestRoot = [IO.Path]::GetFullPath((Split-Path -Parent $latest)).TrimEnd('\')
-            if (-not [string]::Equals($currentRoot,$latestRoot,[StringComparison]::OrdinalIgnoreCase)) {
-                try {
-                    $script:StatusLabel.Text = 'Opening the updated add-on manager...'
-                    Start-Process -FilePath 'wscript.exe' -ArgumentList ('"{0}"' -f $latest) -WorkingDirectory $latestRoot -ErrorAction Stop
-                    $form.Close()
-                    return
-                } catch {
-                    $script:StatusLabel.Text = 'The add-on updated, but the new manager could not open: ' + $_.Exception.Message
-                }
+            try {
+                # Restart even when we were already running from UV3DAddOn;
+                # the updated PowerShell file cannot refresh the current
+                # in-memory WinForms controls without reopening the manager.
+                $script:StatusLabel.Text = 'Opening the updated add-on manager...'
+                Start-Process -FilePath 'wscript.exe' -ArgumentList ('"{0}"' -f $latest) -WorkingDirectory $latestRoot -ErrorAction Stop
+                $form.Close()
+                return
+            } catch {
+                $script:StatusLabel.Text = 'The add-on updated, but the new manager could not open: ' + $_.Exception.Message
             }
         }
     }
