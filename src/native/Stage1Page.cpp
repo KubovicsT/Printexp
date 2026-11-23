@@ -19,6 +19,9 @@ static HINSTANCE g_module = nullptr;
 static HWND g_host = nullptr;
 static HWND g_tab = nullptr;
 static HWND g_page = nullptr;
+static HWND g_navigationHost = nullptr;
+static int g_navProbeCount = 0;
+static int g_navOccludedCount = 0;
 static HHOOK g_navHook = nullptr;
 static bool g_active = false;
 static int g_tabTop = 7;
@@ -140,6 +143,119 @@ static BOOL CALLBACK FindVisionControl(HWND child, LPARAM param) {
         anchor->score = score;
     }
     return TRUE;
+}
+
+
+struct NavigationContainerSearch {
+    HWND root;
+    POINT anchor;
+    HWND best;
+    int score;
+};
+
+static BOOL CALLBACK FindNavigationContainer(HWND child, LPARAM param) {
+    auto* query = reinterpret_cast<NavigationContainerSearch*>(param);
+    if (child == g_tab || child == g_page || !IsWindowVisible(child)) return TRUE;
+    RECT bounds = {};
+    if (!GetWindowRect(child, &bounds)) return TRUE;
+    const int width = bounds.right - bounds.left;
+    const int height = bounds.bottom - bounds.top;
+    // Existing PrintExp page controls sit beneath a full-width ~80 px header.
+    // A wide header child that covers the target point is a safer parent for
+    // our button than the top-level frame, where child panes can occlude it.
+    if (width < 600 || height < 50 || height > 160 ||
+        !PtInRect(&bounds, query->anchor)) return TRUE;
+    POINT clientOrigin = {bounds.left, bounds.top};
+    ScreenToClient(query->root, &clientOrigin);
+    if (clientOrigin.y < -25 || clientOrigin.y > 95) return TRUE;
+    const int score = abs(height - 78) * 100 + abs(clientOrigin.y) * 6 +
+                      (width > 4000 ? 100000 : 0);
+    if (!query->best || score < query->score) {
+        query->best = child;
+        query->score = score;
+    }
+    return TRUE;
+}
+
+static HWND FindNavigationHost(int x, int y) {
+    if (!g_host || !IsWindow(g_host)) return nullptr;
+    POINT point = {x, y};
+    ClientToScreen(g_host, &point);
+    NavigationContainerSearch query = {g_host, point, nullptr, 0x7fffffff};
+    EnumChildWindows(g_host, FindNavigationContainer,
+                     reinterpret_cast<LPARAM>(&query));
+    if (query.best) return query.best;
+    // If the custom navigation doesn't have a full-width child, inspect the
+    // actual window visible at a blank point next to Vision. Never use our tab.
+    if (g_tab && IsWindow(g_tab)) ShowWindow(g_tab, SW_HIDE);
+    HWND hit = WindowFromPoint(point);
+    if (g_tab && IsWindow(g_tab)) ShowWindow(g_tab, SW_SHOW);
+    if (!hit || hit == g_host || hit == g_tab || hit == g_page ||
+        !IsChild(g_host, hit)) return nullptr;
+    HWND current = hit;
+    while (current && GetParent(current) && GetParent(current) != g_host) {
+        current = GetParent(current);
+    }
+    if (current == g_tab || current == g_page) return nullptr;
+    RECT bounds = {};
+    if (!GetWindowRect(current, &bounds)) return nullptr;
+    const int height = bounds.bottom - bounds.top;
+    if (height > 240 || height < 48) return nullptr;
+    return current;
+}
+
+static void AttachNavigationTab(int left, int top) {
+    if (!g_tab || !IsWindow(g_tab) || !g_host || !IsWindow(g_host)) return;
+    HWND candidate = FindNavigationHost(left + kTabWidth / 2,
+                                        top + kTabHeight / 2);
+    if (!candidate) return;  // Frame remains the fallback parent.
+    if (candidate == g_tab || candidate == g_page ||
+        IsChild(g_tab, candidate)) return;
+    if (candidate != g_navigationHost || GetParent(g_tab) != candidate) {
+        SetLastError(ERROR_SUCCESS);
+        HWND oldParent = SetParent(g_tab, candidate);
+        if (!oldParent && GetLastError() != ERROR_SUCCESS) {
+            StageLog(L"WARNING: Could not attach 3D tab to navigation control, Win32=" +
+                std::to_wstring(GetLastError()));
+            return;
+        }
+        g_navigationHost = candidate;
+        wchar_t cls[128] = {};
+        GetClassNameW(candidate, cls, 128);
+        StageLog(L"Attached 3D child tab to PrintExp navigation container class=" +
+            std::wstring(cls) + L" HWND=" +
+            std::to_wstring(reinterpret_cast<UINT_PTR>(candidate)));
+    }
+}
+
+static void VerifyTabVisibility() {
+    if (!g_tab || !IsWindow(g_tab)) return;
+    RECT bounds = {};
+    if (!GetWindowRect(g_tab, &bounds)) return;
+    POINT center = {(bounds.left + bounds.right) / 2,
+                    (bounds.top + bounds.bottom) / 2};
+    HWND topHit = WindowFromPoint(center);
+    if (topHit == g_tab || (topHit && IsChild(g_tab, topHit))) {
+        g_navOccludedCount = 0;
+        if (g_navProbeCount < 2) {
+            StageLog(L"3D tab hit-test passed: visible at x=" +
+                std::to_wstring(center.x) + L" y=" +
+                std::to_wstring(center.y));
+        }
+    } else {
+        ++g_navOccludedCount;
+        if (g_navOccludedCount == 1 || g_navOccludedCount == 10) {
+            wchar_t cls[128] = {};
+            if (topHit) GetClassNameW(topHit, cls, 128);
+            StageLog(L"WARNING: 3D tab is covered at x=" +
+                std::to_wstring(center.x) + L" y=" +
+                std::to_wstring(center.y) + L"; top window=" +
+                cls + L"; expected tab HWND=" +
+                std::to_wstring(reinterpret_cast<UINT_PTR>(g_tab)) +
+                L"; top HWND=" + std::to_wstring(reinterpret_cast<UINT_PTR>(topHit)));
+        }
+    }
+    ++g_navProbeCount;
 }
 
 static void Deactivate3D(const wchar_t* reason) {
@@ -317,9 +433,20 @@ static void Position() {
                  contentHeight > 0 ? contentHeight : 1,
                  SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     if (!g_active) ShowWindow(g_page, SW_HIDE);
-    SetWindowPos(g_tab, HWND_TOP, x, g_tabTop, kTabWidth, kTabHeight,
-                 SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-    ShowWindow(g_tab, SW_SHOW);
+    // Attach to PrintExp's actual top navigation child when available. The
+    // root frame alone can contain an owner-drawn child that covers our tab.
+    if (GetParent(g_tab) == g_host || !g_navigationHost ||
+        !IsWindow(g_navigationHost)) {
+        AttachNavigationTab(x, g_tabTop);
+    }
+    POINT local = {x, g_tabTop};
+    HWND parent = GetParent(g_tab);
+    if (parent && parent != g_host) {
+        MapWindowPoints(g_host, parent, &local, 1);
+    }
+    SetWindowPos(g_tab, HWND_TOP, local.x, local.y, kTabWidth, kTabHeight,
+                 SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+    VerifyTabVisibility();
 }
 
 static LRESULT CALLBACK HostSubclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp,
@@ -331,7 +458,8 @@ static LRESULT CALLBACK HostSubclass(HWND hwnd, UINT message, WPARAM wp, LPARAM 
         if (g_page && IsWindow(g_page)) DestroyWindow(g_page);
         if (g_tab && IsWindow(g_tab)) DestroyWindow(g_tab);
         RemoveWindowSubclass(hwnd, HostSubclass, id);
-        g_host = nullptr; g_tab = nullptr; g_page = nullptr; g_active = false;
+        g_host = nullptr; g_tab = nullptr; g_page = nullptr;
+        g_navigationHost = nullptr; g_active = false;
         return DefSubclassProc(hwnd, message, wp, lp);
     }
     if (message == WM_TIMER && wp == kRepositionTimer) {
@@ -422,6 +550,9 @@ static bool Create3DPage(HWND host) {
                                     std::to_wstring(GetLastError()));
     SetTimer(g_host, kRepositionTimer, 600, nullptr);
     Position();
+    if (!IsWindowVisible(g_tab)) {
+        StageLog(L"WARNING: 3D tab window exists but is not visible after creation.");
+    }
     StageLog(L"SUCCESS: embedded 3D child page created on host HWND=" +
         std::to_wstring(reinterpret_cast<UINT_PTR>(host)) +
         L"; screen tab visible=" + std::to_wstring(IsWindowVisible(g_tab)));
