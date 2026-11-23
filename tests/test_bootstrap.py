@@ -77,6 +77,22 @@ class SingleWindowContractTests(unittest.TestCase):
         self.assertIn("Get-FileHash -LiteralPath $path", ui)
         self.assertIn("verify_installed_files(target, staged, commit, expected_sha, log=log)", core)
 
+    def test_loopback_simulation_is_ui_opt_in_and_UAC_guarded(self):
+        ui = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
+        actions = (ROOT / "addon_action.py").read_text(encoding="utf-8")
+        source = (ROOT / "simulated_controller.py").read_text(encoding="utf-8")
+        profile = (ROOT / "simulation_profile.py").read_text(encoding="utf-8")
+        for keyword in ("Simulate machine connection", "simulate-enable",
+                        "simulate-disable", "Start-SimulatedPrintExp",
+                        "Begin-Modification 'simulate-enable'", "127.0.0.1"):
+            self.assertIn(keyword,ui)
+        self.assertIn("ensure_not_running()",actions)
+        self.assertIn("enable_simulation(folder)",actions)
+        self.assertIn("HOST = \"127.0.0.1\"",source)
+        self.assertIn('PORT = 5001',source)
+        self.assertIn('unsupported_request_no_response',source)
+        self.assertIn('restore_host_patches',profile)
+
     def test_legacy_visual_cpp_2010_mfc_runtime_bootstrap(self):
         bootstrap = (ROOT / "Bootstrap-Installer.ps1").read_text(encoding="utf-8")
         for required in ("mfc100u.dll", "Microsoft.VCRedist.2010.x64",

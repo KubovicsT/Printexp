@@ -265,3 +265,56 @@ alone; if it exits, the script records the exit code and related Windows
 Application Error events. It does not modify the original EXE, issue
 printer commands or simulate a connected controller. Only start with
 `-LaunchBaseline` when PrintExp is not already running.
+
+
+## Simulate machine connection (experimental, offline development PC)
+
+The **single-window launcher** now includes the checkbox
+**Simulate machine connection (offline test)**. When enabled, Launch requests
+administrator permission to change the selected test copy's `Project.ini`.
+The backed-up original is preserved inside
+`UV3DAddOn/.host-patches/`. It changes `PROJECT_MODE` to debug and the
+controller TCP/PLC IP settings to **127.0.0.1**, keeping the port at **5001**.
+Uncheck simulation and Launch to restore the original settings with UAC; the
+regular Uninstall button restores the exact original bytes as well.
+
+A locally hosted Python controller listens on **127.0.0.1:5001 TCP and UDP**
+and launches the experimental native 3D PrintExp loader. It never forwards
+anything to a physical controller. Incoming requests and the simulator's
+response decisions are written in hex to:
+
+`<selected PrintExp folder>/UV3DAddOn/diagnostics/simulated-controller.ndjson`
+
+**Current limitation:** This is currently a loopback transport simulator, NOT
+a fully emulated Hoson mainboard. PrintExp can require firmware responses to
+its startup handshake. Those message formats and expected values have not
+been captured from the actual machine. An accepted TCP connection alone may
+therefore **not** make PrintExp fully initialize. This is not a successful
+machine simulation until PrintExp actually completes startup on the
+disconnected PC. If no requests arrive in the log, PrintExp may be reading an
+additional device profile or may be stopping before the network connection.
+
+A future validated response profile can be stored at:
+
+`UV3DAddOn/config/simulated-controller-rules.json`
+
+Its format matches
+`config/simulated-controller-rules.example.json`:
+
+```json
+{"rules":[{"transport":"tcp","request_prefix_hex":"<verified hex>",
+           "response_hex":"<verified controller response>"}]}
+```
+
+Only use packets verified from your actual controller capture. The default
+contains no reply rules and intentionally does not invent firmware responses.
+Run this **only on a physically disconnected development PC** until all
+device profiles and network paths have been reviewed. The manufacturer's
+configuration modules may specify other controller addresses independently
+of `Project.ini`; the add-on has not proven that all network paths are
+contained.
+
+On startup failures, save the `simulated-controller.ndjson`,
+`native-page.log` and `stage1.log` files. They distinguish transport
+connection, missing protocol replies, native UI registration, and PrintExp
+startup failures. Printing and motion controls remain disabled in our page.

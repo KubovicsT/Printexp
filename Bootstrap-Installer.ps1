@@ -686,6 +686,10 @@ function Start-SimulatedPrintExp([string]$InstallFolder) {
     } catch { $needsElevation = $true }
     $args = ('"{0}" --log "{1}" --launcher "{2}" --host "{3}"' -f
              $virtual,$log,$launcher,$hostExe)
+    $verifiedRules = Join-Path $InstallFolder 'UV3DAddOn\config\simulated-controller-rules.json'
+    if (Test-Path -LiteralPath $verifiedRules -PathType Leaf) {
+        $args += (' --rules "{0}"' -f $verifiedRules)
+    }
     if ($needsElevation) {
         Start-Process -FilePath $script:Python -ArgumentList $args -Verb RunAs -WindowStyle Hidden -ErrorAction Stop
     } else {
