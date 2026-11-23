@@ -15,23 +15,29 @@ This repository contains a reversible add-on for the **specific** PrintExp insta
 - No process memory patching or print/motion command code is included. The native hook is experimental; this is *not* a verified official PrintExp plug-in interface.
 - The original PrintExp shortcut still launches unmodified PrintExp **without** the experimental 3D page. Launch using `Start PrintExp with 3D.cmd` for Stage 1.
 
-## Installing
+## Installing (automatic dependency setup)
 
-1. Ideally the **Build Windows x64 add-on (main)** GitHub Action will compile and commit the two native files. If GitHub Actions is unavailable, the installer can compile the native components locally using **free Microsoft Visual Studio 2022 Build Tools**, with **Desktop development with C++** installed. The installer explains this if the build cannot run.
-2. Install **Python 3** and **Git for Windows** (Git Credential Manager recommended). Git needs access to this **private repository**. You may download this repository as ZIP only to bootstrap `Start-Installer.cmd`; the manager itself retrieves the latest branch using Git.
-3. Run `Start-Installer.cmd` (or `python installer.py`). A real window will open.
-4. Choose the folder containing `PrintExp_X64.exe` and `DeviceManager.dll`.
-5. Click **Install**. The installer clones the latest `main` branch into `PrintExp/UV3DAddOn/` and creates `PrintExp/Start PrintExp with 3D.cmd`.
-6. With the printer idle, use **Launch PrintExp + 3D** in the manager or run `Start PrintExp with 3D.cmd`. You should see a new `3D` tab near the top-right of the PrintExp window. Clicking it opens a Stage 1 test page; clicking again returns to the underlying PrintExp interface.
-7. If the tab overlaps anything, create `UV3DAddOn/config/local-stage1.ini` with a `[Stage1]` section and your preferred `tab_y` and `page_y` values (copy `config/stage1.ini` as a starting point), then restart PrintExp using the 3D launcher. UI placement is provisional until verified on your exact screen layout.
+**Double-click `Start-Installer.cmd`.** Python, Git and Visual Studio C++ Build Tools **do not need to be installed beforehand**.
 
-**Important:** The launcher deliberately uses an **exact host executable checksum** and will not start an unsupported build. Stage 1 works on 64-bit Windows only. The third-party anti-virus or unequal process elevation levels can block Windows message hooking; if this happens, the launcher displays an error and leaves the vendor files untouched. In a failed attach, PrintExp may remain running without the new tab.
+1. A Windows-native **Dependency Setup** window opens first, without requiring Python.
+2. It checks Python 3 (including `tkinter`), Git for Windows, and whether compiled x64 page binaries or the Microsoft C++ compiler are present.
+3. Click **Install missing tools and open installer**. Missing Python and Git are installed automatically through Windows Package Manager (`winget`), with signed official-installation fallbacks if WinGet is missing or fails. Existing installations are reused.
+4. If the native x64 binaries are not included and no compiler is installed, the window offers **Microsoft Visual Studio 2022 C++ Build Tools**. This is a **large download**, may require an administrator prompt, and can be disabled if you don't want the toolchain. If disabled while needed, installation cannot proceed. On machines with an `X:` drive, the proposed Build Tools location is `X:\VisualStudioBuildTools` to avoid filling `C:`; you can change it before installing. Microsoft may still store shared installer components on `C:`.
+5. After dependencies are ready, the usual graphical PrintExp add-on installer opens automatically. Choose the folder containing `PrintExp_X64.exe` and `DeviceManager.dll`, then click **Install**.
+6. The installer clones the latest **private** `main` branch into `PrintExp/UV3DAddOn/`, compiles the x64 page locally only if prebuilt binaries are absent, and creates `PrintExp/Start PrintExp with 3D.cmd`.
+7. With the printer idle, preferably disconnected, click **Launch PrintExp + 3D**. You should see the Stage 1 test tab near the top-right of the existing PrintExp window.
+
+If your GitHub account has not already been authenticated for Git, Git Credential Manager may prompt you to sign in through the browser to access this **private repository**. Dependency setup does not bypass GitHub permissions.
+
+**Fallbacks and security:** WinGet verifies its package manifests; the direct Python.org fallback has a pinned publisher SHA-256 checksum and a checked Authenticode signature. The Git for Windows fallback is fetched from the project's official GitHub releases and its digital signature is verified. Build Tools are downloaded using Microsoft's official installer and verified as Microsoft-signed. The bootstrap never replaces or patches vendor PrintExp files. A reboot may be needed after installing some developer tools.
+
+**Important:** The launcher deliberately uses an **exact host executable checksum** and will not start an unsupported build. Stage 1 works on 64-bit Windows only. Antivirus protections or process privilege differences can block the experimental Windows message hook. If that happens, PrintExp remains unmodified; it may stay open without the new page.
 
 ## Updates (no GitHub releases)
 
 Click **Update from main** in the same manager window. The updater does a Git fetch followed by a fast-forward-only merge of `main`, updating the add-on source and compiled DLL/EXE in place. It refuses to update locally edited tracked files. `PrintExp_X64.exe` and other vendor files are never updated by this tool. Close PrintExp before updating.
 
-The repository's Windows GitHub Action builds both native x64 components with MSVC and commits them back to **main** under `dist/windows/`. The script deliberately does not use GitHub releases. If the binaries are not yet on `main`, the manager attempts to compile them locally with MSVC before installing. It refuses a partial installation if no compiler is available.
+The repository's Windows GitHub Action builds both native x64 components with MSVC and commits them back to **main** under `dist/windows/`. The script deliberately does not use GitHub releases. If the binaries are not yet on `main`, the installer automatically builds them locally using the compiler installed during dependency setup.
 
 ## Uninstall
 
@@ -42,7 +48,7 @@ Close PrintExp and click **Uninstall**. Only the managed `UV3DAddOn/` directory 
 ```text
 README.md
 Start-Installer.cmd
-Build-Native.cmd              local x64 build fallback (free MSVC Build Tools)
+Bootstrap-Installer.ps1         Native Windows dependency check/download UI
 installer.py                  Tkinter graphical manager
 addon_manager_core.py        Git checkout, validation, update and uninstall
 config/stage1.ini             provisional native tab position

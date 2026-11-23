@@ -56,13 +56,13 @@ class Installer(tk.Tk):
         self.uninstall_btn.pack(side="left", padx=(0, 8))
         self.launch_btn = ttk.Button(actions, text="Launch PrintExp + 3D", command=self._launch)
         self.launch_btn.pack(side="left")
-        ttk.Label(frame, text="The original PrintExp.exe and DLLs are never modified. "
+        ttk.Label(frame, text="The original PrintExp executable and DLLs are never modified. "
                   "The 3D tab is loaded only by the new launcher.",
                   style="Secondary.TLabel", wraplength=690).pack(anchor="w", pady=(0, 10))
         self.log = tk.Text(frame, background="#101820", foreground="#d3e7f3", height=10,
                            borderwidth=0, font=("Consolas", 9), wrap="word", state="disabled")
         self.log.pack(fill="both", expand=True)
-        self._log("Select the folder containing PrintExp_X64.exe, then choose Install.")
+        self._log("Dependencies checked by Start-Installer.cmd. Select PrintExp_X64.exe folder, then Install.")
 
     def _browse(self) -> None:
         selection = filedialog.askdirectory(title="Select PrintExp installation directory")

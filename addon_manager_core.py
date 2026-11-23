@@ -101,8 +101,8 @@ def ensure_binaries(checkout: Path, log: Log = print) -> None:
                             text=True, encoding="utf-8", errors="replace", capture_output=True,
                             creationflags=subprocess.CREATE_NO_WINDOW, check=False)
     if result.returncode:
-        raise InstallationError("Cannot build the native page. Install the free Microsoft Visual Studio "
-                                "C++ Build Tools (Desktop development with C++) and retry.\n"
+        raise InstallationError("Cannot build the native page. Relaunch Start-Installer.cmd to set up "
+                                "the free Microsoft C++ Build Tools, then retry.\n"
                                 + (result.stdout + result.stderr)[-1800:])
     log((result.stdout + result.stderr)[-700:])
     remaining = [name for name in BINARIES

@@ -1,17 +1,11 @@
 @echo off
 setlocal
-cd /d "%TEMP%"
-where py >nul 2>&1
-if not errorlevel 1 (
-    py -3 "%~dp0installer.py"
-    goto :end
+cd /d "%~dp0"
+REM Windows PowerShell and Windows Forms are included with supported Windows 10/11.
+REM This bootstrap does not require Python, Git, or the C++ compiler to be installed.
+powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "%~dp0Bootstrap-Installer.ps1"
+if errorlevel 1 (
+  echo.
+  echo The PrintExp 3D setup did not finish. See the message above.
+  pause
 )
-where python >nul 2>&1
-if not errorlevel 1 (
-    python "%~dp0installer.py"
-    goto :end
-)
-echo Python 3 is required to open the installer window.
-echo Install Python 3 for Windows, then try again.
-pause
-:end
